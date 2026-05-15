@@ -36,10 +36,11 @@ for host in "${hosts[@]}"; do
   }
 
   echo "syncing $host"
-  ssh -o BatchMode=yes -o ConnectTimeout=20 "$host" 'mkdir -p ~/.local/bin'
+  ssh -o BatchMode=yes -o ConnectTimeout=20 "$host" 'mkdir -p ~/.local/bin ~/.agents/skills && rm -rf ~/.agents/skills/codex-network'
   scp -q "$repo_dir/bin/codex-network" "$host:~/.local/bin/codex-network"
+  scp -q -r "$repo_dir/skills/codex-network" "$host:~/.agents/skills/codex-network"
   ssh -o BatchMode=yes -o ConnectTimeout=20 "$host" \
-    'chmod +x ~/.local/bin/codex-network && bash -n ~/.local/bin/codex-network'
+    'chmod +x ~/.local/bin/codex-network && bash -n ~/.local/bin/codex-network && test -f ~/.agents/skills/codex-network/SKILL.md'
 done
 
-echo "synced codex-network to ${#hosts[@]} RDE(s)"
+echo "synced codex-network helper and skill to ${#hosts[@]} RDE(s)"

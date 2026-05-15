@@ -31,7 +31,7 @@ This installs:
 - the Codex skill to `~/.agents/skills/codex-network`
 - the optional Codex skill to `~/src/dotagents/skills/codex-network` when that checkout exists
 
-To copy the helper to all managed RDEs:
+To copy the helper and skill to all managed RDEs:
 
 ```bash
 scripts/sync-rdes.sh
