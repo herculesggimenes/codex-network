@@ -28,6 +28,7 @@ HTTP forwarding uses native SSH tunnels:
 This installs:
 
 - `bin/codex-network` to `~/.local/bin/codex-network`
+- the Codex skill to `~/.agents/skills/codex-network`
 - the optional Codex skill to `~/src/dotagents/skills/codex-network` when that checkout exists
 
 To copy the helper to all managed RDEs:

@@ -1,6 +1,12 @@
 ---
 name: codex-network
-description: Use the local codex-network helper for Codex conversation networking and HTTP forwarding across the parent Mac and subscribed RDEs, especially when asked to list all sessions, send messages by conversation id, continue another chat, or expose a localhost service between environments.
+description: >-
+  Use codex-network whenever work needs to cross Codex environments: list or
+  message Codex chats across the parent Mac and subscribed RDEs, continue or
+  steer another conversation by conversation id, expose/share a localhost HTTP
+  port, start a dev server that must be reachable from another environment,
+  verify a URL from an RDE, or hand off work between local and remote sessions
+  without exposing raw SSH, tmux, or app-server details.
 ---
 
 # Codex Network
@@ -9,83 +15,112 @@ description: Use the local codex-network helper for Codex conversation networkin
 
 Infrastructure Operations
 
-## Use when
+## Use Whenever
 
-- the user wants to list Codex conversations across local and RDE sessions
-- the user wants to send a message to another Codex chat by conversation id
-- the user asks whether an RDE/local session can communicate with another chat
-- the user wants to expose or access a localhost HTTP service across the parent machine and subscribed RDEs
-- the user asks for the native/non-reinvented way this network is implemented
+- the user asks to list all Codex sessions, chats, conversations, threads, RDE sessions, or local sessions
+- the user wants to send, continue, steer, wake up, or hand off work to another Codex chat by conversation id
+- the user asks whether local/RDE sessions can communicate with each other or with a parent chat
+- a task starts a localhost server, dev server, preview server, app server, HTTP API, webhook receiver, Storybook, Vite app, Next app, Rails app, dashboard, or other port that may need to be opened from another environment
+- the user asks to share work between local and RDEs, share a running app, expose a port, forward a port, open a URL from an RDE, make a service reachable from the parent Mac, or make one RDE reach another RDE's local server
+- the user asks to dogfood, browser-test, smoke-test, or inspect a web app that is running in a different Codex environment
+- the user wants the native/non-reinvented implementation for cross-environment Codex communication
 
-## Default workflow
+## Default Routing
 
-1. Prefer `codex-network` before manually opening Codex state databases, SSHing into every RDE, or exposing raw app-server URLs.
-2. Check availability:
+1. Prefer `codex-network` before manual SSH loops, raw `ssh -L` or `ssh -R`, direct Codex state-database reads, raw app-server URLs, or bespoke tunnel scripts.
+2. Keep the user-facing interface high level: conversation ids, forward names, node names, and ports.
+3. If the task is about conversations or work handoff, use the conversation commands.
+4. If the task is about a running localhost service, URL, browser preview, dev server, webhook receiver, or any port, use the HTTP forward commands.
+5. If a command must create or stop a mesh HTTP forward, run it from the parent Mac for now. RDEs can list forwards, resolve names, and use the returned localhost URLs.
 
-   ```bash
-   command -v codex-network
-   codex-network http list
-   ```
+## Availability Check
 
-3. List conversations across subscribed nodes:
+```bash
+command -v codex-network
+codex-network http list
+```
 
-   ```bash
-   codex-network list --limit 1000
-   ```
+Use `codex-network http list` as the cheap health check because it does not require starting or probing every Codex app-server.
 
-4. Send to another chat by id:
+## Conversation Commands
 
-   ```bash
-   codex-network send <conversation-id> --message "<message>"
-   ```
+List conversations across subscribed nodes:
 
-5. Expose an HTTP service from an explicit node:
+```bash
+codex-network list --limit 1000
+```
 
-   ```bash
-   codex-network http expose <node>:<port> --name <name>
-   codex-network http url <name>
-   ```
+Find a specific conversation by scanning the list:
 
-6. Expose an HTTP service from the node owning a conversation:
+```bash
+codex-network list --limit 1000 --search "<text>"
+```
 
-   ```bash
-   codex-network http expose --conversation-id <conversation-id> --port <port> --name <name>
-   codex-network http url <name>
-   ```
+Send or steer a message to another chat by id:
 
-7. List or stop active forwards:
+```bash
+codex-network send <conversation-id> --message "<message>"
+```
 
-   ```bash
-   codex-network http list
-   codex-network http stop <name>
-   ```
+Use this when the user says to continue another chat, tell another session something, keep conversations flowing, pass context to an RDE, or send an instruction directly into a running session.
 
-## Rules
+## HTTP Forward Commands
 
-- Keep the user-facing path high level: conversation ids, forward names, nodes, and ports.
-- Do not expose raw app-server URLs, hidden internal commands, or raw tunnel commands unless debugging requires it.
-- Creating or stopping mesh HTTP forwards should run from the parent machine for now; RDEs can list forwards, resolve names, and use the returned localhost URL.
-- Prefer named HTTP forwards over ad hoc one-off SSH tunnels.
-- After creating a forward, verify the URL from the parent and at least one RDE.
-- Stop temporary smoke-test forwards before finishing unless the user explicitly wants the forward left running.
+Expose a service from an explicit node:
+
+```bash
+codex-network http expose <node>:<port> --name <name>
+codex-network http url <name>
+```
+
+Expose a service from the node that owns a conversation:
+
+```bash
+codex-network http expose --conversation-id <conversation-id> --port <port> --name <name>
+codex-network http url <name>
+```
+
+List or stop active forwards:
+
+```bash
+codex-network http list
+codex-network http stop <name>
+```
+
+After creating a forward, verify the returned URL from the parent and at least one relevant RDE:
+
+```bash
+curl -fsS "$(codex-network http url <name>)"
+ssh <rde-host> 'curl -fsS "$(codex-network http url <name>)"'
+```
+
+## Port-Sharing Policy
+
+- When starting a server that may be inspected outside its origin environment, start it bound to `127.0.0.1` in the origin environment, then expose it with a named `codex-network http expose` forward.
+- Prefer names that identify the work, not the mechanism, for example `review-app`, `storybook-pr-123`, `worker-webhook`, or `wren-preview`.
+- If the service belongs to a conversation, prefer `--conversation-id <id> --port <port>` so the node is resolved instead of hard-coded.
+- If the user only asks to start a server and there is any chance they need to open it from another environment, mention the forward name and URL after exposing it.
+- Stop temporary smoke-test forwards before finishing unless the user asked to leave the shared port running.
 
 ## Under The Hood
 
 - Conversation messaging uses Codex app-server v2 JSON-RPC over the built-in WebSocket transport.
-- HTTP forwarding uses SSH `-L` and `-R` tunnels managed by tmux.
+- HTTP forwarding uses native SSH `-L` and `-R` tunnels managed by tmux.
 - Parent-local port remapping uses a tiny Node TCP proxy.
 - Node registry: `~/.codex-network/nodes.tsv`
 - HTTP registry: `~/.codex-network/http.tsv`
 
 ## Gotchas
 
-- If `codex-network list` cannot scan an RDE, restore the parent app-server SSH forward for that node before relying on conversation-id resolution.
 - `http expose --conversation-id` still needs `--port`; the conversation resolves the owning node, not the application port.
-- RDEs need the helper copied to `~/.local/bin/codex-network` and the node registry synced before they can resolve all nodes.
-- Do not print Codex credentials, OAuth tokens, or private app-server payloads.
+- Creating/stopping mesh forwards currently runs from the parent Mac because it owns the SSH aliases and tmux tunnel control.
+- If `codex-network list` cannot scan an RDE, restore the parent app-server SSH forward for that node before relying on conversation-id resolution.
+- RDEs need `~/.local/bin/codex-network` and `~/.codex-network/nodes.tsv` synced before they can resolve all nodes.
+- Do not print Codex credentials, OAuth tokens, private app-server payloads, or raw internal tunnel details unless debugging requires a narrow excerpt.
 
-## Stop conditions
+## Stop Conditions
 
 - Stop and report if SSH to a target RDE fails.
 - Stop and report if the target HTTP port is not listening.
 - Stop and report if a conversation id is ambiguous across subscribed nodes.
+- Stop and report if a requested share would require exposing a service beyond localhost; this helper is designed for `127.0.0.1`-scoped forwards.
