@@ -1,0 +1,1624 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_URL="${CODEX_NETWORK_URL:-ws://127.0.0.1:49321}"
+DEFAULT_PARENT_URL="${CODEX_NETWORK_PARENT_URL:-ws://127.0.0.1:49322}"
+DEFAULT_SESSION="${CODEX_NETWORK_SESSION:-codex-network}"
+DEFAULT_TMUX_SOCKET="${CODEX_NETWORK_TMUX_SOCKET:-codex-network}"
+DEFAULT_LIST_LIMIT="${CODEX_NETWORK_LIST_LIMIT:-20}"
+DEFAULT_NODES_FILE="${CODEX_NETWORK_NODES_FILE:-$HOME/.codex-network/nodes.tsv}"
+DEFAULT_HTTP_FILE="${CODEX_NETWORK_HTTP_FILE:-$HOME/.codex-network/http.tsv}"
+DEFAULT_HTTP_BASE_PORT="${CODEX_NETWORK_HTTP_BASE_PORT:-49400}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  codex-network list [--limit 20] [--search <text>]
+  codex-network send <conversation-id> [--message <text>]
+  codex-network http list
+  codex-network http expose <node>:<port> [--name <name>] [--listen-port <port>]
+  codex-network http expose --conversation-id <id> --port <port> [--name <name>] [--listen-port <port>]
+  codex-network http url <name>
+  codex-network http stop <name>
+  codex-network serve
+  codex-network status
+
+Native Codex app-server network helper.
+
+The protocol is Codex app-server v2 JSON-RPC over the built-in WebSocket
+transport. Conversation ids are resolved across the subscribed local/RDE nodes
+before the helper sends to the owner.
+
+HTTP forwards are named localhost URLs exposed on every subscribed node.
+EOF
+}
+
+die() {
+  echo "codex-network: $*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+http_url_for_ws() {
+  local url="$1"
+  case "$url" in
+    ws://*) printf 'http://%s' "${url#ws://}" ;;
+    wss://*) printf 'https://%s' "${url#wss://}" ;;
+    *) die "expected ws:// or wss:// URL, got: $url" ;;
+  esac
+}
+
+host_port_from_ws_url() {
+  local url="$1"
+  local stripped
+  local default_port
+  case "$url" in
+    ws://*)
+      stripped="${url#ws://}"
+      default_port=80
+      ;;
+    wss://*)
+      stripped="${url#wss://}"
+      default_port=443
+      ;;
+    *)
+      die "expected ws:// or wss:// URL, got: $url"
+      ;;
+  esac
+
+  local authority="${stripped%%/*}"
+  local host
+  local port
+  if [[ "$authority" =~ ^\[([^]]+)\]:(.+)$ ]]; then
+    host="${BASH_REMATCH[1]}"
+    port="${BASH_REMATCH[2]}"
+  elif [[ "$authority" == *:* ]]; then
+    host="${authority%:*}"
+    port="${authority##*:}"
+  else
+    host="$authority"
+    port="$default_port"
+  fi
+
+  [[ -n "$host" ]] || die "URL is missing a host: $url"
+  [[ "$port" =~ ^[0-9]+$ ]] || die "URL has a non-numeric port: $url"
+  printf '%s %s\n' "$host" "$port"
+}
+
+managed_rde_hosts() {
+  local config="$HOME/.ssh/config"
+  [[ -f "$config" ]] || return 0
+  awk '
+    $1 == "#" && $0 ~ /BEGIN Codex RDE aliases/ { in_block = 1; next }
+    $1 == "#" && $0 ~ /END Codex RDE aliases/ { in_block = 0 }
+    in_block && tolower($1) == "host" {
+      for (i = 2; i <= NF; i++) {
+        if ($i !~ /[*?]/) print $i
+      }
+    }
+  ' "$config" | sort -u
+}
+
+have_node_registry() {
+  [[ -s "$DEFAULT_NODES_FILE" ]]
+}
+
+read_node_registry() {
+  [[ -f "$DEFAULT_NODES_FILE" ]] || return 0
+  awk -F '\t' '
+    NF >= 2 && $1 !~ /^#/ && $1 != "" && $2 != "" {
+      print $1 "\t" $2
+    }
+  ' "$DEFAULT_NODES_FILE"
+}
+
+ensure_server_ready() {
+  local url="$1"
+  local http_url
+  http_url="$(http_url_for_ws "$url")"
+
+  if command -v curl >/dev/null 2>&1 && curl -fsS "$http_url/readyz" >/dev/null; then
+    return
+  fi
+
+  serve --url "$url" >/dev/null
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if command -v curl >/dev/null 2>&1 && curl -fsS "$http_url/readyz" >/dev/null; then
+      return
+    fi
+    sleep 0.5
+  done
+
+  die "app-server did not become ready: $url"
+}
+
+serve() {
+  local url="$DEFAULT_URL"
+  local session="$DEFAULT_SESSION"
+  local tmux_socket="$DEFAULT_TMUX_SOCKET"
+  local foreground=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --url)
+        [[ $# -ge 2 ]] || die "missing value for --url"
+        url="$2"
+        shift 2
+        ;;
+      --session)
+        [[ $# -ge 2 ]] || die "missing value for --session"
+        session="$2"
+        shift 2
+        ;;
+      --tmux-socket)
+        [[ $# -ge 2 ]] || die "missing value for --tmux-socket"
+        tmux_socket="$2"
+        shift 2
+        ;;
+      --foreground)
+        foreground=true
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown serve argument: $1"
+        ;;
+    esac
+  done
+
+  require_command codex
+
+  if [[ "$foreground" == true ]]; then
+    exec codex app-server --listen "$url"
+  fi
+
+  require_command tmux
+  [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $session"
+  [[ "$tmux_socket" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux socket name: $tmux_socket"
+
+  if tmux -L "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
+    echo "codex app-server already running in tmux session: $session"
+    return
+  fi
+
+  tmux -L "$tmux_socket" new-session -d -s "$session" -n app-server -c "$HOME" \
+    "$SHELL" -lc "codex app-server --listen $(printf '%q' "$url"); exec \"\$SHELL\" -l"
+  echo "started codex app-server in tmux session: $session"
+  echo "endpoint: $url"
+}
+
+status() {
+  local url="$DEFAULT_URL"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --url)
+        [[ $# -ge 2 ]] || die "missing value for --url"
+        url="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown status argument: $1"
+        ;;
+    esac
+  done
+
+  local http_url
+  http_url="$(http_url_for_ws "$url")"
+  if command -v curl >/dev/null 2>&1 && curl -fsS "$http_url/readyz" >/dev/null; then
+    echo "ready: $url"
+  else
+    die "not ready: $url"
+  fi
+}
+
+stop() {
+  local session="$DEFAULT_SESSION"
+  local tmux_socket="$DEFAULT_TMUX_SOCKET"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --session)
+        [[ $# -ge 2 ]] || die "missing value for --session"
+        session="$2"
+        shift 2
+        ;;
+      --tmux-socket)
+        [[ $# -ge 2 ]] || die "missing value for --tmux-socket"
+        tmux_socket="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown stop argument: $1"
+        ;;
+    esac
+  done
+
+  require_command tmux
+  [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $session"
+  [[ "$tmux_socket" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux socket name: $tmux_socket"
+  if tmux -L "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
+    tmux -L "$tmux_socket" kill-session -t "$session"
+    echo "stopped tmux session: $session"
+  else
+    echo "tmux session not running: $session"
+  fi
+}
+
+expose_parent() {
+  local parent_url="$DEFAULT_URL"
+  local remote_port="${CODEX_NETWORK_PARENT_PORT:-49322}"
+  local tmux_socket="$DEFAULT_TMUX_SOCKET"
+  local all_rdes=false
+  local hosts=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --host)
+        [[ $# -ge 2 ]] || die "missing value for --host"
+        hosts+=("$2")
+        shift 2
+        ;;
+      --all-rdes)
+        all_rdes=true
+        shift
+        ;;
+      --parent-url)
+        [[ $# -ge 2 ]] || die "missing value for --parent-url"
+        parent_url="$2"
+        shift 2
+        ;;
+      --remote-port)
+        [[ $# -ge 2 ]] || die "missing value for --remote-port"
+        remote_port="$2"
+        shift 2
+        ;;
+      --tmux-socket)
+        [[ $# -ge 2 ]] || die "missing value for --tmux-socket"
+        tmux_socket="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown expose-parent argument: $1"
+        ;;
+    esac
+  done
+
+  if [[ "$all_rdes" == true ]]; then
+    local managed_host
+    while IFS= read -r managed_host; do
+      [[ -n "$managed_host" ]] && hosts+=("$managed_host")
+    done < <(managed_rde_hosts)
+  fi
+
+  [[ ${#hosts[@]} -gt 0 ]] || die "provide --host or --all-rdes"
+  [[ "$remote_port" =~ ^[0-9]+$ ]] || die "remote port must be numeric: $remote_port"
+  [[ "$tmux_socket" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux socket name: $tmux_socket"
+
+  require_command tmux
+  require_command ssh
+
+  local parent_host
+  local parent_port
+  read -r parent_host parent_port < <(host_port_from_ws_url "$parent_url")
+
+  local seen=" "
+  local host
+  for host in "${hosts[@]}"; do
+    [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "unsafe SSH host alias: $host"
+    if [[ "$seen" == *" $host "* ]]; then
+      continue
+    fi
+    seen+="$host "
+
+    local session="codex-network-parent-$host"
+    [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $session"
+
+    if tmux -L "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
+      echo "parent tunnel already running for $host in tmux session: $session"
+    else
+      local ssh_args=(
+        ssh
+        -N
+        -o ExitOnForwardFailure=yes
+        -o ServerAliveInterval=30
+        -o ServerAliveCountMax=3
+        -R "127.0.0.1:${remote_port}:${parent_host}:${parent_port}"
+        "$host"
+      )
+      local quoted=()
+      local arg
+      for arg in "${ssh_args[@]}"; do
+        quoted+=("$(printf '%q' "$arg")")
+      done
+
+      tmux -L "$tmux_socket" new-session -d -s "$session" -n parent-tunnel -c "$HOME" \
+        "$SHELL" -lc "exec ${quoted[*]}"
+      echo "started parent tunnel for $host in tmux session: $session"
+    fi
+
+    if ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" \
+      "curl -fsS http://127.0.0.1:${remote_port}/readyz >/dev/null"; then
+      echo "verified parent endpoint on $host: ws://127.0.0.1:${remote_port}"
+    else
+      echo "warning: parent endpoint not ready on $host: ws://127.0.0.1:${remote_port}" >&2
+    fi
+  done
+}
+
+sanitize_service_name() {
+  local raw="$1"
+  local sanitized
+  sanitized="$(printf '%s' "$raw" | sed 's/[^A-Za-z0-9_.-]/-/g; s/--*/-/g; s/^-//; s/-$//')"
+  [[ -n "$sanitized" ]] || sanitized="service"
+  printf '%s\n' "$sanitized"
+}
+
+validate_service_name() {
+  [[ "$1" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe HTTP forward name: $1"
+}
+
+validate_port() {
+  local label="$1"
+  local port="$2"
+  [[ "$port" =~ ^[0-9]+$ ]] || die "$label must be numeric: $port"
+  (( port >= 1 && port <= 65535 )) || die "$label must be between 1 and 65535: $port"
+}
+
+host_in_list() {
+  local needle="$1"
+  shift
+  local host
+  for host in "$@"; do
+    [[ "$host" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+node_exists() {
+  local node_name="$1"
+  if [[ "$node_name" == "local" ]]; then
+    return 0
+  fi
+  if have_node_registry && read_node_registry | awk -F '\t' -v node="$node_name" '$1 == node { found = 1 } END { exit found ? 0 : 1 }'; then
+    return 0
+  fi
+  return 1
+}
+
+current_node_name() {
+  if have_node_registry; then
+    local node_name node_url
+    while IFS=$'\t' read -r node_name node_url; do
+      if [[ "$node_url" == "$DEFAULT_URL" ]]; then
+        printf '%s\n' "$node_name"
+        return
+      fi
+    done < <(read_node_registry)
+  fi
+  printf 'local\n'
+}
+
+read_http_registry() {
+  [[ -f "$DEFAULT_HTTP_FILE" ]] || return 0
+  awk -F '\t' '
+    NF >= 5 && $1 !~ /^#/ && $1 != "" {
+      print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5
+    }
+  ' "$DEFAULT_HTTP_FILE"
+}
+
+lookup_http_registry() {
+  local name="$1"
+  read_http_registry | awk -F '\t' -v name="$name" '$1 == name { print; found = 1; exit } END { exit found ? 0 : 1 }'
+}
+
+remove_http_registry_entry() {
+  local name="$1"
+  local registry_dir tmp
+  registry_dir="${DEFAULT_HTTP_FILE%/*}"
+  mkdir -p "$registry_dir"
+  touch "$DEFAULT_HTTP_FILE"
+  tmp="${DEFAULT_HTTP_FILE}.$$"
+  awk -F '\t' -v name="$name" 'NF >= 1 && $1 != name { print }' "$DEFAULT_HTTP_FILE" > "$tmp"
+  mv "$tmp" "$DEFAULT_HTTP_FILE"
+}
+
+upsert_http_registry_entry() {
+  local name="$1"
+  local target_node="$2"
+  local target_port="$3"
+  local listen_port="$4"
+  local url="$5"
+  local registry_dir
+  registry_dir="${DEFAULT_HTTP_FILE%/*}"
+  mkdir -p "$registry_dir"
+  remove_http_registry_entry "$name"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$target_node" "$target_port" "$listen_port" "$url" >> "$DEFAULT_HTTP_FILE"
+}
+
+sync_http_registry_to_rdes() {
+  local host
+  local registry_dir
+  registry_dir="${DEFAULT_HTTP_FILE%/*}"
+  mkdir -p "$registry_dir"
+  touch "$DEFAULT_HTTP_FILE"
+
+  [[ $# -gt 0 ]] || return 0
+  require_command scp
+  require_command ssh
+  for host in "$@"; do
+    [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "unsafe SSH host alias: $host"
+    if ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "mkdir -p \"\$HOME/.codex-network\"" &&
+      scp -q "$DEFAULT_HTTP_FILE" "$host:~/.codex-network/http.tsv"; then
+      :
+    else
+      echo "warning: unable to sync HTTP registry to $host" >&2
+    fi
+  done
+}
+
+port_open_local() {
+  local port="$1"
+  (exec 3<>"/dev/tcp/127.0.0.1/${port}") >/dev/null 2>&1
+}
+
+port_open_remote() {
+  local host="$1"
+  local port="$2"
+  ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" \
+    "bash -lc 'exec 3<>/dev/tcp/127.0.0.1/${port}'" >/dev/null 2>&1
+}
+
+wait_port_open_local() {
+  local port="$1"
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    port_open_local "$port" && return 0
+    sleep 0.3
+  done
+  return 1
+}
+
+wait_port_open_remote() {
+  local host="$1"
+  local port="$2"
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    port_open_remote "$host" "$port" && return 0
+    sleep 0.3
+  done
+  return 1
+}
+
+pick_http_port() {
+  validate_port "HTTP base port" "$DEFAULT_HTTP_BASE_PORT"
+  local port="$DEFAULT_HTTP_BASE_PORT"
+  local end=$((DEFAULT_HTTP_BASE_PORT + 299))
+  local host free
+  while (( port <= end )); do
+    free=true
+    if port_open_local "$port"; then
+      free=false
+    fi
+    if [[ "$free" == true ]]; then
+      for host in "$@"; do
+        if port_open_remote "$host" "$port"; then
+          free=false
+          break
+        fi
+      done
+    fi
+    if [[ "$free" == true ]]; then
+      printf '%s\n' "$port"
+      return
+    fi
+    port=$((port + 1))
+  done
+  die "unable to find a free HTTP forward port starting at $DEFAULT_HTTP_BASE_PORT"
+}
+
+tmux_start_command() {
+  local session="$1"
+  local window="$2"
+  shift 2
+
+  require_command tmux
+  [[ "$DEFAULT_TMUX_SOCKET" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux socket name: $DEFAULT_TMUX_SOCKET"
+  [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $session"
+
+  if tmux -L "$DEFAULT_TMUX_SOCKET" has-session -t "$session" >/dev/null 2>&1; then
+    echo "HTTP forward session already running: $session"
+    return
+  fi
+
+  local quoted=()
+  local arg
+  for arg in "$@"; do
+    quoted+=("$(printf '%q' "$arg")")
+  done
+
+  tmux -L "$DEFAULT_TMUX_SOCKET" new-session -d -s "$session" -n "$window" -c "$HOME" \
+    "$SHELL" -lc "exec ${quoted[*]}"
+  echo "started HTTP forward session: $session"
+}
+
+start_local_http_proxy() {
+  local name="$1"
+  local listen_port="$2"
+  local target_host="$3"
+  local target_port="$4"
+  local session="codex-network-http-${name}-local"
+  local node_script
+  node_script='const net=require("net");const listen=Number(process.env.LISTEN_PORT);const targetHost=process.env.TARGET_HOST;const targetPort=Number(process.env.TARGET_PORT);const server=net.createServer((client)=>{const upstream=net.connect(targetPort,targetHost);const close=()=>{client.destroy();upstream.destroy();};client.on("error",close);upstream.on("error",close);client.pipe(upstream);upstream.pipe(client);});server.on("error",(error)=>{console.error(error.message);process.exit(1);});server.listen(listen,"127.0.0.1");'
+  require_command node
+  tmux_start_command "$session" http-proxy \
+    env "LISTEN_PORT=$listen_port" "TARGET_HOST=$target_host" "TARGET_PORT=$target_port" node -e "$node_script"
+}
+
+start_ssh_http_source() {
+  local name="$1"
+  local target_node="$2"
+  local target_port="$3"
+  local listen_port="$4"
+  local session="codex-network-http-${name}-source"
+
+  [[ "$target_node" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "unsafe SSH host alias: $target_node"
+  require_command ssh
+  tmux_start_command "$session" http-source \
+    ssh -N \
+      -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=30 \
+      -o ServerAliveCountMax=3 \
+      -L "127.0.0.1:${listen_port}:127.0.0.1:${target_port}" \
+      "$target_node"
+}
+
+start_ssh_http_reverse() {
+  local name="$1"
+  local host="$2"
+  local listen_port="$3"
+  local session="codex-network-http-${name}-to-${host}"
+
+  [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "unsafe SSH host alias: $host"
+  require_command ssh
+  tmux_start_command "$session" http-reverse \
+    ssh -N \
+      -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=30 \
+      -o ServerAliveCountMax=3 \
+      -R "127.0.0.1:${listen_port}:127.0.0.1:${listen_port}" \
+      "$host"
+}
+
+http_list() {
+  read_http_registry | awk -F '\t' '
+    BEGIN {
+      printf "%-24s %-24s %-11s %-11s %s\n", "NAME", "TARGET", "PORT", "LISTEN", "URL"
+    }
+    NF >= 5 {
+      target = $2 ":" $3
+      printf "%-24s %-24s %-11s %-11s %s\n", $1, target, $3, $4, $5
+    }
+  '
+}
+
+http_url() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "HTTP forward name is required"
+  validate_service_name "$name"
+
+  local row
+  if ! row="$(lookup_http_registry "$name")"; then
+    die "HTTP forward not found: $name"
+  fi
+
+  awk -F '\t' 'NF >= 5 { print $5; exit }' <<< "$row"
+}
+
+load_managed_hosts_array() {
+  local hosts_var="$1"
+  local host
+  eval "$hosts_var=()"
+  while IFS= read -r host; do
+    [[ -n "$host" ]] || continue
+    [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "unsafe SSH host alias: $host"
+    eval "$hosts_var+=(\"\$host\")"
+  done < <(managed_rde_hosts)
+}
+
+http_stop() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "HTTP forward name is required"
+  validate_service_name "$name"
+
+  local row
+  if ! row="$(lookup_http_registry "$name")"; then
+    die "HTTP forward not found: $name"
+  fi
+
+  local hosts=()
+  load_managed_hosts_array hosts
+  [[ ${#hosts[@]} -gt 0 ]] || die "http stop must run on the parent node for now"
+
+  require_command tmux
+  local prefix="codex-network-http-${name}"
+  local sessions session
+  sessions="$(tmux -L "$DEFAULT_TMUX_SOCKET" list-sessions -F '#S' 2>/dev/null | awk -v prefix="$prefix" '
+    $0 == prefix "-local" || $0 == prefix "-source" || index($0, prefix "-to-") == 1 { print }
+  ' || true)"
+
+  while IFS= read -r session; do
+    [[ -n "$session" ]] || continue
+    tmux -L "$DEFAULT_TMUX_SOCKET" kill-session -t "$session" || true
+    echo "stopped HTTP forward session: $session"
+  done <<< "$sessions"
+
+  remove_http_registry_entry "$name"
+  sync_http_registry_to_rdes "${hosts[@]}"
+  echo "removed HTTP forward: $name"
+}
+
+http_expose() {
+  local target_spec=""
+  local target_node=""
+  local target_port=""
+  local listen_port=""
+  local name=""
+  local conversation_id=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --conversation-id)
+        [[ $# -ge 2 ]] || die "missing value for --conversation-id"
+        conversation_id="$2"
+        shift 2
+        ;;
+      --node)
+        [[ $# -ge 2 ]] || die "missing value for --node"
+        target_node="$2"
+        shift 2
+        ;;
+      --port)
+        [[ $# -ge 2 ]] || die "missing value for --port"
+        target_port="$2"
+        shift 2
+        ;;
+      --name)
+        [[ $# -ge 2 ]] || die "missing value for --name"
+        name="$2"
+        shift 2
+        ;;
+      --listen-port)
+        [[ $# -ge 2 ]] || die "missing value for --listen-port"
+        listen_port="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        if [[ -z "$target_spec" ]]; then
+          target_spec="$1"
+          shift
+        else
+          die "unknown http expose argument: $1"
+        fi
+        ;;
+    esac
+  done
+
+  if [[ -n "$conversation_id" ]]; then
+    [[ -z "$target_node" ]] || die "use either --conversation-id or --node, not both"
+    [[ -n "$target_port" ]] || die "--port is required with --conversation-id"
+    local resolved
+    resolved="$(resolve_conversation "$conversation_id")"
+    IFS=$'\t' read -r target_node _ <<< "$resolved"
+  fi
+
+  if [[ -n "$target_spec" ]]; then
+    if [[ "$target_spec" == *:* ]]; then
+      [[ -z "$target_node" ]] || die "target node was provided twice"
+      [[ -z "$target_port" ]] || die "target port was provided twice"
+      target_node="${target_spec%:*}"
+      target_port="${target_spec##*:}"
+    else
+      [[ -z "$target_port" ]] || die "target port was provided twice"
+      target_port="$target_spec"
+    fi
+  fi
+
+  if [[ -z "$target_node" ]]; then
+    target_node="$(current_node_name)"
+  fi
+
+  [[ -n "$target_port" ]] || die "target port is required"
+  validate_port "target port" "$target_port"
+  [[ "$target_node" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe target node name: $target_node"
+
+  local hosts=()
+  load_managed_hosts_array hosts
+  [[ ${#hosts[@]} -gt 0 ]] || die "http expose must run on the parent node for now"
+
+  if [[ "$target_node" != "local" ]] && ! host_in_list "$target_node" "${hosts[@]}"; then
+    die "target node is not a managed RDE: $target_node"
+  fi
+  if have_node_registry && ! node_exists "$target_node"; then
+    die "target node is not in the subscribed node registry: $target_node"
+  fi
+
+  if [[ -z "$listen_port" ]]; then
+    listen_port="$(pick_http_port "${hosts[@]}")"
+  fi
+  validate_port "listen port" "$listen_port"
+
+  if [[ -z "$name" ]]; then
+    name="$(sanitize_service_name "${target_node}-${target_port}")"
+  fi
+  validate_service_name "$name"
+
+  if [[ "$target_node" == "local" ]]; then
+    port_open_local "$target_port" || die "target service is not listening on local port $target_port"
+  else
+    port_open_remote "$target_node" "$target_port" || die "target service is not listening on $target_node:$target_port"
+  fi
+
+  if [[ ! ( "$target_node" == "local" && "$listen_port" == "$target_port" ) ]]; then
+    port_open_local "$listen_port" && die "listen port is already in use locally: $listen_port"
+  fi
+
+  local host
+  for host in "${hosts[@]}"; do
+    if [[ "$host" == "$target_node" && "$listen_port" == "$target_port" ]]; then
+      continue
+    fi
+    port_open_remote "$host" "$listen_port" && die "listen port is already in use on $host: $listen_port"
+  done
+
+  if [[ "$target_node" == "local" ]]; then
+    if [[ "$listen_port" == "$target_port" ]]; then
+      echo "using existing local HTTP service on port $listen_port"
+    else
+      start_local_http_proxy "$name" "$listen_port" "127.0.0.1" "$target_port"
+    fi
+  else
+    start_ssh_http_source "$name" "$target_node" "$target_port" "$listen_port"
+  fi
+
+  if ! wait_port_open_local "$listen_port"; then
+    die "HTTP forward did not become reachable locally on port $listen_port"
+  fi
+
+  for host in "${hosts[@]}"; do
+    if [[ "$host" == "$target_node" && "$listen_port" == "$target_port" ]]; then
+      echo "using existing target service on $host port $listen_port"
+      continue
+    fi
+    start_ssh_http_reverse "$name" "$host" "$listen_port"
+    if wait_port_open_remote "$host" "$listen_port"; then
+      echo "verified HTTP forward on $host: http://127.0.0.1:${listen_port}"
+    else
+      echo "warning: HTTP forward not reachable yet on $host: http://127.0.0.1:${listen_port}" >&2
+    fi
+  done
+
+  local url="http://127.0.0.1:${listen_port}"
+  upsert_http_registry_entry "$name" "$target_node" "$target_port" "$listen_port" "$url"
+  sync_http_registry_to_rdes "${hosts[@]}"
+  echo "exposed HTTP forward: $name -> ${target_node}:${target_port}"
+  echo "$url"
+}
+
+http_command() {
+  local command="${1:-list}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+
+  case "$command" in
+    list) http_list "$@" ;;
+    expose) http_expose "$@" ;;
+    url) http_url "$@" ;;
+    stop) http_stop "$@" ;;
+    -h|--help|"") usage ;;
+    *) die "unknown http command: $command" ;;
+  esac
+}
+
+thread_list_local() {
+  local url="$DEFAULT_URL"
+  local node_name="local"
+  local limit="$DEFAULT_LIST_LIMIT"
+  local search=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --url)
+        [[ $# -ge 2 ]] || die "missing value for --url"
+        url="$2"
+        shift 2
+        ;;
+      --node)
+        [[ $# -ge 2 ]] || die "missing value for --node"
+        node_name="$2"
+        shift 2
+        ;;
+      --limit)
+        [[ $# -ge 2 ]] || die "missing value for --limit"
+        limit="$2"
+        shift 2
+        ;;
+      --search)
+        [[ $# -ge 2 ]] || die "missing value for --search"
+        search="$2"
+        shift 2
+        ;;
+      *)
+        die "unknown internal list argument: $1"
+        ;;
+    esac
+  done
+
+  [[ "$limit" =~ ^[0-9]+$ ]] || die "limit must be numeric: $limit"
+  ensure_server_ready "$url"
+  require_command node
+
+  CODEX_NETWORK_URL="$url" \
+    CODEX_NETWORK_NODE="$node_name" \
+    CODEX_NETWORK_LIMIT="$limit" \
+    CODEX_NETWORK_SEARCH="$search" \
+    node <<'NODE'
+const url = process.env.CODEX_NETWORK_URL;
+const nodeName = process.env.CODEX_NETWORK_NODE || "local";
+const limit = Number.parseInt(process.env.CODEX_NETWORK_LIMIT || "20", 10);
+const search = process.env.CODEX_NETWORK_SEARCH || "";
+
+let nextId = 1;
+const pending = new Map();
+const timeout = setTimeout(() => fail("thread/list timed out"), 15000);
+
+function fail(error) {
+  const message = error && error.message ? error.message : String(error);
+  console.error(message);
+  process.exit(1);
+}
+
+function request(ws, method, params) {
+  const id = nextId++;
+  const promise = new Promise((resolve, reject) => pending.set(id, { resolve, reject, method }));
+  ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+  return promise;
+}
+
+function notify(ws, method, params) {
+  ws.send(JSON.stringify({ jsonrpc: "2.0", method, params }));
+}
+
+function field(value) {
+  return String(value ?? "").replace(/\t/g, " ").replace(/\r?\n/g, " ");
+}
+
+function statusOf(thread) {
+  const status = thread?.status;
+  if (typeof status === "string") return status;
+  if (status && typeof status.type === "string") return status.type;
+  return "";
+}
+
+function titleOf(thread) {
+  const title = thread?.name || thread?.preview || "";
+  return title.replace(/\s+/g, " ").trim();
+}
+
+function isoTime(seconds) {
+  if (!Number.isFinite(seconds)) return "";
+  return new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+const ws = new WebSocket(url);
+ws.addEventListener("open", async () => {
+  try {
+    await request(ws, "initialize", {
+      clientInfo: { name: "codex-network", title: "Codex Network", version: "0.1.0" },
+      capabilities: { experimentalApi: true },
+    });
+    notify(ws, "initialized", null);
+    const result = await request(ws, "thread/list", {
+      limit,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+      archived: false,
+      useStateDbOnly: false,
+      searchTerm: search || null,
+    });
+
+    for (const thread of result?.data || []) {
+      const row = [
+        nodeName,
+        thread.id,
+        isoTime(thread.updatedAt),
+        statusOf(thread),
+        thread.cwd || "",
+        titleOf(thread),
+      ];
+      console.log(row.map(field).join("\t"));
+    }
+    clearTimeout(timeout);
+    process.exit(0);
+  } catch (error) {
+    clearTimeout(timeout);
+    fail(error);
+  }
+});
+
+ws.addEventListener("message", (event) => {
+  let msg;
+  try {
+    msg = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(msg, "id") && pending.has(msg.id)) {
+    const { resolve, reject, method } = pending.get(msg.id);
+    pending.delete(msg.id);
+    if (msg.error) reject(new Error(`${method} failed: ${JSON.stringify(msg.error)}`));
+    else resolve(msg.result);
+  }
+});
+
+ws.addEventListener("error", (event) => fail(event.error || "websocket error"));
+NODE
+}
+
+resolve_local() {
+  local url="$DEFAULT_URL"
+  local node_name="local"
+  local conversation_id=""
+  local max_scan="${CODEX_NETWORK_RESOLVE_SCAN_LIMIT:-2000}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --url)
+        [[ $# -ge 2 ]] || die "missing value for --url"
+        url="$2"
+        shift 2
+        ;;
+      --node)
+        [[ $# -ge 2 ]] || die "missing value for --node"
+        node_name="$2"
+        shift 2
+        ;;
+      --conversation-id)
+        [[ $# -ge 2 ]] || die "missing value for --conversation-id"
+        conversation_id="$2"
+        shift 2
+        ;;
+      --max-scan)
+        [[ $# -ge 2 ]] || die "missing value for --max-scan"
+        max_scan="$2"
+        shift 2
+        ;;
+      *)
+        if [[ -z "$conversation_id" ]]; then
+          conversation_id="$1"
+          shift
+        else
+          die "unknown internal resolve argument: $1"
+        fi
+        ;;
+    esac
+  done
+
+  [[ -n "$conversation_id" ]] || die "conversation id is required"
+  [[ "$max_scan" =~ ^[0-9]+$ ]] || die "max scan must be numeric: $max_scan"
+  ensure_server_ready "$url"
+  require_command node
+
+  CODEX_NETWORK_URL="$url" \
+    CODEX_NETWORK_NODE="$node_name" \
+    CODEX_NETWORK_CONVERSATION_ID="$conversation_id" \
+    CODEX_NETWORK_MAX_SCAN="$max_scan" \
+    node <<'NODE'
+const url = process.env.CODEX_NETWORK_URL;
+const nodeName = process.env.CODEX_NETWORK_NODE || "local";
+const needle = process.env.CODEX_NETWORK_CONVERSATION_ID || "";
+const maxScan = Number.parseInt(process.env.CODEX_NETWORK_MAX_SCAN || "2000", 10);
+
+let nextId = 1;
+const pending = new Map();
+const timeout = setTimeout(() => fail("conversation resolution timed out"), 20000);
+
+function fail(error) {
+  const message = error && error.message ? error.message : String(error);
+  console.error(message);
+  process.exit(1);
+}
+
+function request(ws, method, params) {
+  const id = nextId++;
+  const promise = new Promise((resolve, reject) => pending.set(id, { resolve, reject, method }));
+  ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+  return promise;
+}
+
+function notify(ws, method, params) {
+  ws.send(JSON.stringify({ jsonrpc: "2.0", method, params }));
+}
+
+function field(value) {
+  return String(value ?? "").replace(/\t/g, " ").replace(/\r?\n/g, " ");
+}
+
+function titleOf(thread) {
+  const title = thread?.name || thread?.preview || "";
+  return title.replace(/\s+/g, " ").trim();
+}
+
+function isoTime(seconds) {
+  if (!Number.isFinite(seconds)) return "";
+  return new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function matches(thread) {
+  return thread?.id === needle ||
+    thread?.sessionId === needle ||
+    String(thread?.id || "").startsWith(needle) ||
+    String(thread?.sessionId || "").startsWith(needle);
+}
+
+function printMatch(thread) {
+  console.log([
+    nodeName,
+    thread.id,
+    isoTime(thread.updatedAt),
+    thread.cwd || "",
+    titleOf(thread),
+  ].map(field).join("\t"));
+}
+
+const ws = new WebSocket(url);
+ws.addEventListener("open", async () => {
+  try {
+    await request(ws, "initialize", {
+      clientInfo: { name: "codex-network", title: "Codex Network", version: "0.1.0" },
+      capabilities: { experimentalApi: true },
+    });
+    notify(ws, "initialized", null);
+
+    let cursor = null;
+    let scanned = 0;
+    const matchesFound = [];
+    while (scanned < maxScan) {
+      const pageLimit = Math.min(100, maxScan - scanned);
+      const result = await request(ws, "thread/list", {
+        cursor,
+        limit: pageLimit,
+        sortKey: "updated_at",
+        sortDirection: "desc",
+        archived: false,
+        useStateDbOnly: false,
+      });
+      const data = result?.data || [];
+      for (const thread of data) {
+        if (matches(thread)) matchesFound.push(thread);
+      }
+      scanned += data.length;
+      if (!result?.nextCursor || data.length === 0) break;
+      cursor = result.nextCursor;
+    }
+
+    if (matchesFound.length === 0 && /^[0-9a-fA-F-]{36}$/.test(needle)) {
+      try {
+        const read = await request(ws, "thread/read", { threadId: needle, includeTurns: false });
+        if (read?.thread) matchesFound.push(read.thread);
+      } catch {
+        // A missing exact thread is a normal result while scanning multiple nodes.
+      }
+    }
+
+    for (const thread of matchesFound) printMatch(thread);
+    clearTimeout(timeout);
+    process.exit(matchesFound.length > 0 ? 0 : 1);
+  } catch (error) {
+    clearTimeout(timeout);
+    fail(error);
+  }
+});
+
+ws.addEventListener("message", (event) => {
+  let msg;
+  try {
+    msg = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(msg, "id") && pending.has(msg.id)) {
+    const { resolve, reject, method } = pending.get(msg.id);
+    pending.delete(msg.id);
+    if (msg.error) reject(new Error(`${method} failed: ${JSON.stringify(msg.error)}`));
+    else resolve(msg.result);
+  }
+});
+
+ws.addEventListener("error", (event) => fail(event.error || "websocket error"));
+NODE
+}
+
+format_conversation_rows() {
+  awk -F '\t' '
+    BEGIN {
+      printf "%-24s %-36s %-20s %-11s %-36s %s\n", "NODE", "CONVERSATION", "UPDATED", "STATUS", "CWD", "TITLE"
+    }
+    NF >= 6 {
+      node = substr($1, 1, 24)
+      id = substr($2, 1, 36)
+      updated = substr($3, 1, 20)
+      status = substr($4, 1, 11)
+      cwd = substr($5, 1, 36)
+      title = $6
+      for (i = 7; i <= NF; i++) title = title " " $i
+      printf "%-24s %-36s %-20s %-11s %-36s %s\n", node, id, updated, status, cwd, title
+    }
+  '
+}
+
+list_conversations() {
+  local limit="$DEFAULT_LIST_LIMIT"
+  local search=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --limit)
+        [[ $# -ge 2 ]] || die "missing value for --limit"
+        limit="$2"
+        shift 2
+        ;;
+      --search)
+        [[ $# -ge 2 ]] || die "missing value for --search"
+        search="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown list argument: $1"
+        ;;
+    esac
+  done
+
+  [[ "$limit" =~ ^[0-9]+$ ]] || die "limit must be numeric: $limit"
+
+  if have_node_registry; then
+    {
+      local node_name node_url
+      while IFS=$'\t' read -r node_name node_url; do
+        [[ -n "$node_name" && -n "$node_url" ]] || continue
+        thread_list_local --node "$node_name" --url "$node_url" --limit "$limit" --search "$search" || \
+          echo "warning: unable to list conversations on $node_name" >&2
+      done < <(read_node_registry)
+    } | sort -t "$(printf '\t')" -k3,3r | format_conversation_rows
+    return
+  fi
+
+  require_command ssh
+
+  {
+    thread_list_local --node local --limit "$limit" --search "$search" || true
+
+    local host
+    for host in $(managed_rde_hosts); do
+      [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || continue
+      local remote_args=(__list-local --node "$host" --limit "$limit")
+      if [[ -n "$search" ]]; then
+        remote_args+=(--search "$search")
+      fi
+      local quoted=()
+      local arg
+      for arg in "${remote_args[@]}"; do
+        quoted+=("$(printf '%q' "$arg")")
+      done
+      ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" \
+        "PATH=\"\$HOME/.local/bin:\$PATH\"; export PATH; codex-network ${quoted[*]}" || \
+        echo "warning: unable to list conversations on $host" >&2
+    done
+  } | sort -t "$(printf '\t')" -k3,3r | format_conversation_rows
+}
+
+resolve_conversation() {
+  local conversation_id="$1"
+  local matches=""
+  local output=""
+
+  if have_node_registry; then
+    local node_name node_url
+    while IFS=$'\t' read -r node_name node_url; do
+      [[ -n "$node_name" && -n "$node_url" ]] || continue
+      if output="$(resolve_local --node "$node_name" --url "$node_url" --conversation-id "$conversation_id" 2>/dev/null)"; then
+        while IFS= read -r line; do
+          [[ -n "$line" ]] && matches+="$line"$'\t'"$node_url"$'\n'
+        done <<< "$output"
+      fi
+    done < <(read_node_registry)
+
+    local count
+    count="$(printf '%s' "$matches" | awk 'NF { n++ } END { print n + 0 }')"
+    if [[ "$count" -eq 0 ]]; then
+      die "conversation not found across subscribed nodes: $conversation_id"
+    fi
+    if [[ "$count" -gt 1 ]]; then
+      echo "codex-network: conversation id is ambiguous: $conversation_id" >&2
+      printf '%s' "$matches" | awk -F '\t' 'NF >= 5 { printf "  %s  %s  %s  %s\n", $1, $2, $3, $5 }' >&2
+      exit 1
+    fi
+
+    printf '%s' "$matches" | awk 'NF { print; exit }'
+    return
+  fi
+
+  if output="$(resolve_local --node local --conversation-id "$conversation_id" 2>/dev/null)"; then
+    matches+="$output"$'\t'$'\n'
+  fi
+
+  require_command ssh
+  local host
+  for host in $(managed_rde_hosts); do
+    [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || continue
+    local remote_args=(__resolve-local --node "$host" --conversation-id "$conversation_id")
+    local quoted=()
+    local arg
+    for arg in "${remote_args[@]}"; do
+      quoted+=("$(printf '%q' "$arg")")
+    done
+    if output="$(ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" \
+      "PATH=\"\$HOME/.local/bin:\$PATH\"; export PATH; codex-network ${quoted[*]}" 2>/dev/null)"; then
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && matches+="$line"$'\t'$'\n'
+      done <<< "$output"
+    fi
+  done
+
+  local count
+  count="$(printf '%s' "$matches" | awk 'NF { n++ } END { print n + 0 }')"
+  if [[ "$count" -eq 0 ]]; then
+    die "conversation not found across subscribed nodes: $conversation_id"
+  fi
+  if [[ "$count" -gt 1 ]]; then
+    echo "codex-network: conversation id is ambiguous: $conversation_id" >&2
+    printf '%s' "$matches" | awk -F '\t' 'NF >= 5 { printf "  %s  %s  %s  %s\n", $1, $2, $3, $5 }' >&2
+    exit 1
+  fi
+
+  printf '%s' "$matches" | awk 'NF { print; exit }'
+}
+
+send_resolved() {
+  local conversation_id=""
+  local message=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --message)
+        [[ $# -ge 2 ]] || die "missing value for --message"
+        message="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        if [[ -z "$conversation_id" ]]; then
+          conversation_id="$1"
+          shift
+        elif [[ -z "$message" ]]; then
+          message="$*"
+          break
+        else
+          die "unknown send argument: $1"
+        fi
+        ;;
+    esac
+  done
+
+  [[ -n "$conversation_id" ]] || die "conversation id is required"
+  if [[ -z "$message" ]]; then
+    if [[ -t 0 ]]; then
+      die "message is required via --message, positional text, or stdin"
+    fi
+    message="$(cat)"
+  fi
+
+  local resolved
+  resolved="$(resolve_conversation "$conversation_id")"
+  local node_name thread_id updated_at cwd title endpoint_url
+  IFS=$'\t' read -r node_name thread_id updated_at cwd title endpoint_url <<< "$resolved"
+
+  echo "resolved: node=$node_name conversation=$thread_id" >&2
+  if [[ -n "${endpoint_url:-}" ]]; then
+    send_message --local --url "$endpoint_url" --thread-id "$thread_id" --message "$message"
+  elif [[ "$node_name" == "local" ]]; then
+    send_message --local --url "$DEFAULT_URL" --thread-id "$thread_id" --message "$message"
+  else
+    send_message --host "$node_name" --url "$DEFAULT_URL" --thread-id "$thread_id" --message "$message"
+  fi
+}
+
+send_command() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --thread-id|--url|--host|--cwd|--local)
+        send_message "$@"
+        return
+        ;;
+    esac
+  done
+
+  send_resolved "$@"
+}
+
+send_message() {
+  local url="$DEFAULT_URL"
+  local thread_id=""
+  local host=""
+  local cwd=""
+  local message=""
+  local local_only=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --url)
+        [[ $# -ge 2 ]] || die "missing value for --url"
+        url="$2"
+        shift 2
+        ;;
+      --thread-id)
+        [[ $# -ge 2 ]] || die "missing value for --thread-id"
+        thread_id="$2"
+        shift 2
+        ;;
+      --host)
+        [[ $# -ge 2 ]] || die "missing value for --host"
+        host="$2"
+        shift 2
+        ;;
+      --cwd)
+        [[ $# -ge 2 ]] || die "missing value for --cwd"
+        cwd="$2"
+        shift 2
+        ;;
+      --message)
+        [[ $# -ge 2 ]] || die "missing value for --message"
+        message="$2"
+        shift 2
+        ;;
+      --local)
+        local_only=true
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        if [[ -z "$message" ]]; then
+          message="$*"
+          break
+        fi
+        die "unknown send argument: $1"
+        ;;
+    esac
+  done
+
+  [[ -n "$thread_id" ]] || die "--thread-id is required"
+  if [[ -z "$message" ]]; then
+    if [[ -t 0 ]]; then
+      die "message is required via --message, positional text, or stdin"
+    fi
+    message="$(cat)"
+  fi
+
+  if [[ -n "$host" && "$local_only" != true ]]; then
+    require_command ssh
+    local remote_args=()
+    remote_args+=("send" "--local" "--url" "$url" "--thread-id" "$thread_id")
+    if [[ -n "$cwd" ]]; then
+      remote_args+=("--cwd" "$cwd")
+    fi
+    local quoted=()
+    local arg
+    for arg in "${remote_args[@]}"; do
+      quoted+=("$(printf '%q' "$arg")")
+    done
+    printf '%s' "$message" |
+      ssh -T "$host" "PATH=\"\$HOME/.local/bin:\$PATH\"; export PATH; codex-network ${quoted[*]}"
+    return
+  fi
+
+  require_command node
+  CODEX_NETWORK_URL="$url" \
+    CODEX_NETWORK_THREAD_ID="$thread_id" \
+    CODEX_NETWORK_CWD="$cwd" \
+    CODEX_NETWORK_MESSAGE="$message" \
+    node <<'NODE'
+const url = process.env.CODEX_NETWORK_URL;
+const threadId = process.env.CODEX_NETWORK_THREAD_ID;
+const cwd = process.env.CODEX_NETWORK_CWD || "";
+const message = process.env.CODEX_NETWORK_MESSAGE || "";
+
+let nextId = 1;
+const pending = new Map();
+let targetTurnId = null;
+let completed = false;
+
+function fail(error) {
+  const message = error && error.message ? error.message : String(error);
+  console.error(message);
+  process.exit(1);
+}
+
+function request(ws, method, params) {
+  const id = nextId++;
+  const payload = { jsonrpc: "2.0", id, method, params };
+  const promise = new Promise((resolve, reject) => pending.set(id, { resolve, reject, method }));
+  ws.send(JSON.stringify(payload));
+  return promise;
+}
+
+function notify(ws, method, params) {
+  ws.send(JSON.stringify({ jsonrpc: "2.0", method, params }));
+}
+
+function itemText(item) {
+  if (!item || typeof item !== "object") return null;
+  if (item.type === "agentMessage" && typeof item.text === "string") return item.text;
+  if (item.type === "reasoning" && typeof item.text === "string") return item.text;
+  if (typeof item.text === "string" && (item.type || "").toLowerCase().includes("agent")) return item.text;
+  return null;
+}
+
+const ws = new WebSocket(url);
+
+ws.addEventListener("open", async () => {
+  try {
+    await request(ws, "initialize", {
+      clientInfo: {
+        name: "codex-network",
+        title: "Codex Network",
+        version: "0.1.0",
+      },
+      capabilities: {
+        experimentalApi: true,
+        optOutNotificationMethods: [
+          "item/reasoning_text/delta",
+          "item/reasoning_summary_text/delta",
+        ],
+      },
+    });
+    notify(ws, "initialized", null);
+
+    const resumeParams = { threadId };
+    if (cwd) resumeParams.cwd = cwd;
+    const resume = await request(ws, "thread/resume", resumeParams);
+    const resolvedThreadId = resume?.thread?.id || threadId;
+    const activeTurn = Array.isArray(resume?.thread?.turns)
+      ? [...resume.thread.turns].reverse().find((turn) => turn?.status === "inProgress")
+      : null;
+
+    const input = [{ type: "text", text: message, textElements: [] }];
+    if (activeTurn?.id) {
+      const steer = await request(ws, "turn/steer", {
+        threadId: resolvedThreadId,
+        expectedTurnId: activeTurn.id,
+        input,
+      });
+      targetTurnId = steer?.turnId || activeTurn.id;
+      console.error(`steered: thread=${resolvedThreadId} turn=${targetTurnId}`);
+      return;
+    }
+
+    const turn = await request(ws, "turn/start", { threadId: resolvedThreadId, input });
+    targetTurnId = turn?.turn?.id;
+    if (!targetTurnId) {
+      throw new Error(`turn/start response did not include turn.id: ${JSON.stringify(turn)}`);
+    }
+    console.error(`sent: thread=${resolvedThreadId} turn=${targetTurnId}`);
+  } catch (error) {
+    fail(error);
+  }
+});
+
+ws.addEventListener("message", (event) => {
+  let msg;
+  try {
+    msg = JSON.parse(event.data);
+  } catch (error) {
+    console.error(`invalid JSON from app-server: ${event.data}`);
+    return;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(msg, "id") && pending.has(msg.id)) {
+    const { resolve, reject, method } = pending.get(msg.id);
+    pending.delete(msg.id);
+    if (msg.error) {
+      reject(new Error(`${method} failed: ${JSON.stringify(msg.error)}`));
+    } else {
+      resolve(msg.result);
+    }
+    return;
+  }
+
+  if (!msg.method) return;
+  const params = msg.params || {};
+  if (msg.method === "item/completed") {
+    const text = itemText(params.item);
+    if (text) process.stdout.write(`${text}\n`);
+  }
+  if (msg.method === "turn/completed" && params.turn?.id === targetTurnId) {
+    completed = true;
+    const status = params.turn?.status || "unknown";
+    console.error(`completed: ${status}`);
+    if (status === "failed" && params.turn?.error?.message) {
+      console.error(params.turn.error.message);
+      process.exitCode = 1;
+    }
+    ws.close();
+  }
+});
+
+ws.addEventListener("error", (event) => {
+  fail(event.error || "websocket error");
+});
+
+ws.addEventListener("close", () => {
+  if (!completed && targetTurnId) {
+    console.error("connection closed before turn/completed");
+    process.exit(1);
+  }
+});
+NODE
+}
+
+main() {
+  local command="${1:-}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+
+  case "$command" in
+    list) list_conversations "$@" ;;
+    serve) serve "$@" ;;
+    stop) stop "$@" ;;
+    send) send_command "$@" ;;
+    http) http_command "$@" ;;
+    send-parent) send_message --local --url "$DEFAULT_PARENT_URL" "$@" ;;
+    expose-parent) expose_parent "$@" ;;
+    __list-local) thread_list_local "$@" ;;
+    __resolve-local) resolve_local "$@" ;;
+    status) status "$@" ;;
+    -h|--help|"") usage ;;
+    *) die "unknown command: $command" ;;
+  esac
+}
+
+main "$@"
