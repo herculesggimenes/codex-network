@@ -1,12 +1,6 @@
 ---
 name: codex-network
-description: >-
-  Use codex-network whenever work needs to cross Codex environments: list or
-  message Codex chats across the parent Mac and subscribed RDEs, continue or
-  steer another conversation by conversation id, expose/share a localhost HTTP
-  port, start a dev server that must be reachable from another environment,
-  verify a URL from an RDE, or hand off work between local and remote sessions
-  without exposing raw SSH, tmux, or app-server details.
+description: "Use codex-network whenever work needs to cross Codex environments: list or message Codex chats across the parent Mac and subscribed RDEs, continue or steer another conversation by conversation id, expose/share a localhost HTTP port, start a dev server that must be reachable from another environment, verify a URL from an RDE, or hand off work between local and remote sessions without exposing raw SSH, tmux, or app-server details."
 ---
 
 # Codex Network
