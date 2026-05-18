@@ -38,6 +38,7 @@ Usage:
   codex-network control serve
   codex-network control status
   codex-network control stop
+  codex-network doctor conversations [--limit 100] [--workspace <path>]
   codex-network serve
   codex-network expose-parent --all-hosts
   codex-network status
@@ -59,6 +60,28 @@ die() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+quote_args() {
+  local quoted=()
+  local arg
+  for arg in "$@"; do
+    quoted+=("$(printf '%q' "$arg")")
+  done
+  printf '%s\n' "${quoted[*]}"
+}
+
+remote_codex_network() {
+  local host="$1"
+  shift
+
+  validate_ssh_host_alias "$host" || die "unsafe SSH host alias: $host"
+  require_command ssh
+
+  local quoted
+  quoted="$(quote_args "$@")"
+  ssh -n -o BatchMode=yes -o ConnectTimeout=15 "$host" \
+    "PATH=\"\$HOME/.local/bin:\$PATH\"; export PATH; codex-network $quoted"
 }
 
 require_rpc_script() {
@@ -171,6 +194,10 @@ ensure_server_ready() {
   local allow_start="${2:-true}"
   local http_url
   http_url="$(http_url_for_ws "$url")"
+
+  if [[ "${CODEX_NETWORK_SKIP_READY_CHECK:-}" == "1" || "${CODEX_NETWORK_SKIP_READY_CHECK:-}" == "true" ]]; then
+    return
+  fi
 
   if command -v curl >/dev/null 2>&1 && curl -fsS "$http_url/readyz" >/dev/null 2>&1; then
     return
@@ -587,14 +614,11 @@ expose_parent() {
         -R "127.0.0.1:${remote_port}:${parent_host}:${parent_port}"
         "$host"
       )
-      local quoted=()
-      local arg
-      for arg in "${ssh_args[@]}"; do
-        quoted+=("$(printf '%q' "$arg")")
-      done
+      local quoted
+      quoted="$(quote_args "${ssh_args[@]}")"
 
       tmux -L "$tmux_socket" new-session -d -s "$session" -n parent-tunnel -c "$HOME" \
-        "$SHELL" -lc "exec ${quoted[*]}"
+        "$SHELL" -lc "exec $quoted"
       echo "started parent tunnel for $host in tmux session: $session"
     fi
 
@@ -624,14 +648,11 @@ expose_parent() {
         -R "127.0.0.1:${control_port}:127.0.0.1:${control_port}"
         "$host"
       )
-      local control_quoted=()
-      local control_arg
-      for control_arg in "${control_ssh_args[@]}"; do
-        control_quoted+=("$(printf '%q' "$control_arg")")
-      done
+      local control_quoted
+      control_quoted="$(quote_args "${control_ssh_args[@]}")"
 
       tmux -L "$tmux_socket" new-session -d -s "$control_session" -n parent-control -c "$HOME" \
-        "$SHELL" -lc "exec ${control_quoted[*]}"
+        "$SHELL" -lc "exec $control_quoted"
       echo "started parent control tunnel for $host in tmux session: $control_session"
     fi
 
@@ -682,6 +703,12 @@ node_exists() {
     return 0
   fi
   return 1
+}
+
+node_registry_url() {
+  local node_name="$1"
+  [[ -f "$DEFAULT_NODES_FILE" ]] || return 1
+  awk -F '\t' -v node="$node_name" '$1 == node && $2 != "" { print $2; found = 1; exit } END { exit found ? 0 : 1 }' "$DEFAULT_NODES_FILE"
 }
 
 current_node_name() {
@@ -844,14 +871,11 @@ tmux_start_command() {
     return
   fi
 
-  local quoted=()
-  local arg
-  for arg in "$@"; do
-    quoted+=("$(printf '%q' "$arg")")
-  done
+  local quoted
+  quoted="$(quote_args "$@")"
 
   tmux -L "$DEFAULT_TMUX_SOCKET" new-session -d -s "$session" -n "$window" -c "$HOME" \
-    "$SHELL" -lc "exec ${quoted[*]}"
+    "$SHELL" -lc "exec $quoted"
   echo "started HTTP forward session: $session"
 }
 
@@ -1294,6 +1318,48 @@ format_conversation_rows() {
   '
 }
 
+conversation_rows() {
+  local limit="$1"
+  local search="${2:-}"
+  if have_node_registry; then
+    local node_name node_url
+    while IFS=$'\t' read -r node_name node_url; do
+      [[ -n "$node_name" && -n "$node_url" ]] || continue
+      if thread_list_local --node "$node_name" --url "$node_url" --limit "$limit" --search "$search" 2>/dev/null; then
+        continue
+      fi
+
+      if [[ "$node_name" != "local" ]] && validate_ssh_host_alias "$node_name"; then
+        local remote_args=(__list-local --node "$node_name" --limit "$limit")
+        if [[ -n "$search" ]]; then
+          remote_args+=(--search "$search")
+        fi
+        remote_codex_network "$node_name" "${remote_args[@]}" || \
+          echo "warning: unable to list conversations on $node_name" >&2
+      else
+        echo "warning: unable to list conversations on $node_name" >&2
+      fi
+    done < <(read_node_registry)
+    return
+  fi
+
+  require_command ssh
+
+  {
+    thread_list_local --node local --limit "$limit" --search "$search" || true
+
+    local host
+    while IFS= read -r host; do
+      local remote_args=(__list-local --node "$host" --limit "$limit")
+      if [[ -n "$search" ]]; then
+        remote_args+=(--search "$search")
+      fi
+      remote_codex_network "$host" "${remote_args[@]}" || \
+        echo "warning: unable to list conversations on $host" >&2
+    done < <(managed_hosts_checked)
+  }
+}
+
 list_conversations() {
   local limit="$DEFAULT_LIST_LIMIT"
   local search=""
@@ -1321,40 +1387,7 @@ list_conversations() {
   done
 
   [[ "$limit" =~ ^[0-9]+$ ]] || die "limit must be numeric: $limit"
-
-  if have_node_registry; then
-    {
-      local node_name node_url
-      while IFS=$'\t' read -r node_name node_url; do
-        [[ -n "$node_name" && -n "$node_url" ]] || continue
-        thread_list_local --node "$node_name" --url "$node_url" --limit "$limit" --search "$search" 2>/dev/null || \
-          echo "warning: unable to list conversations on $node_name" >&2
-      done < <(read_node_registry)
-    } | sort -t "$(printf '\t')" -k3,3r | format_conversation_rows
-    return
-  fi
-
-  require_command ssh
-
-  {
-    thread_list_local --node local --limit "$limit" --search "$search" || true
-
-    local host
-    while IFS= read -r host; do
-      local remote_args=(__list-local --node "$host" --limit "$limit")
-      if [[ -n "$search" ]]; then
-        remote_args+=(--search "$search")
-      fi
-      local quoted=()
-      local arg
-      for arg in "${remote_args[@]}"; do
-        quoted+=("$(printf '%q' "$arg")")
-      done
-      ssh -n -o BatchMode=yes -o ConnectTimeout=15 "$host" \
-        "PATH=\"\$HOME/.local/bin:\$PATH\"; export PATH; codex-network ${quoted[*]}" || \
-        echo "warning: unable to list conversations on $host" >&2
-    done < <(managed_hosts_checked)
-  } | sort -t "$(printf '\t')" -k3,3r | format_conversation_rows
+  conversation_rows "$limit" "$search" | sort -t "$(printf '\t')" -k3,3r | format_conversation_rows
 }
 
 resolve_conversation() {
@@ -1370,6 +1403,12 @@ resolve_conversation() {
         while IFS= read -r line; do
           [[ -n "$line" ]] && matches+="$line"$'\t'"$node_url"$'\n'
         done <<< "$output"
+      elif [[ "$node_name" != "local" ]] && validate_ssh_host_alias "$node_name"; then
+        if output="$(remote_codex_network "$node_name" __resolve-local --node "$node_name" --conversation-id "$conversation_id" 2>/dev/null)"; then
+          while IFS= read -r line; do
+            [[ -n "$line" ]] && matches+="$line"$'\t'$'\n'
+          done <<< "$output"
+        fi
       fi
     done < <(read_node_registry)
 
@@ -1395,14 +1434,7 @@ resolve_conversation() {
   require_command ssh
   local host
   while IFS= read -r host; do
-    local remote_args=(__resolve-local --node "$host" --conversation-id "$conversation_id")
-    local quoted=()
-    local arg
-    for arg in "${remote_args[@]}"; do
-      quoted+=("$(printf '%q' "$arg")")
-    done
-    if output="$(ssh -n -o BatchMode=yes -o ConnectTimeout=15 "$host" \
-      "PATH=\"\$HOME/.local/bin:\$PATH\"; export PATH; codex-network ${quoted[*]}" 2>/dev/null)"; then
+    if output="$(remote_codex_network "$host" __resolve-local --node "$host" --conversation-id "$conversation_id" 2>/dev/null)"; then
       while IFS= read -r line; do
         [[ -n "$line" ]] && matches+="$line"$'\t'$'\n'
       done <<< "$output"
@@ -1421,6 +1453,135 @@ resolve_conversation() {
   fi
 
   printf '%s' "$matches" | awk 'NF { print; exit }'
+}
+
+resolve_conversation_on_node() {
+  local node_name="$1"
+  local conversation_id="$2"
+  local node_url=""
+
+  if have_node_registry && node_url="$(node_registry_url "$node_name")"; then
+    if resolve_local --node "$node_name" --url "$node_url" --conversation-id "$conversation_id" 2>/dev/null; then
+      return
+    fi
+  fi
+
+  if [[ "$node_name" == "local" ]]; then
+    resolve_local --node local --conversation-id "$conversation_id"
+    return
+  fi
+
+  if validate_ssh_host_alias "$node_name"; then
+    remote_codex_network "$node_name" __resolve-local --node "$node_name" --conversation-id "$conversation_id"
+    return
+  fi
+
+  return 1
+}
+
+format_doctor_rows() {
+  awk -F '\t' '
+    BEGIN {
+      printf "%-6s %-24s %-36s %-36s %s\n", "STATUS", "NODE", "CONVERSATION", "WORKSPACE", "DETAIL"
+    }
+    NF >= 5 {
+      status = substr($1, 1, 6)
+      node = substr($2, 1, 24)
+      id = substr($3, 1, 36)
+      workspace = substr($4, 1, 36)
+      detail = $5
+      for (i = 6; i <= NF; i++) detail = detail " " $i
+      printf "%-6s %-24s %-36s %-36s %s\n", status, node, id, workspace, detail
+    }
+  '
+}
+
+doctor_conversations() {
+  local limit="${CODEX_NETWORK_DOCTOR_LIMIT:-100}"
+  local search=""
+  local workspace=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --limit)
+        [[ $# -ge 2 ]] || die "missing value for --limit"
+        limit="$2"
+        shift 2
+        ;;
+      --search)
+        [[ $# -ge 2 ]] || die "missing value for --search"
+        search="$2"
+        shift 2
+        ;;
+      --workspace|--cwd)
+        [[ $# -ge 2 ]] || die "missing value for --workspace"
+        workspace="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown doctor conversations argument: $1"
+        ;;
+    esac
+  done
+
+  [[ "$limit" =~ ^[0-9]+$ ]] || die "limit must be numeric: $limit"
+
+  local rows
+  rows="$(conversation_rows "$limit" "$search")"
+  [[ -n "$rows" ]] || die "no conversations found to validate"
+
+  local checked=0
+  local failed=0
+  local results=""
+  local node_name thread_id _updated_at _status cwd _title
+  while IFS=$'\t' read -r node_name thread_id _updated_at _status cwd _title; do
+    [[ -n "$node_name" && -n "$thread_id" ]] || continue
+    if [[ -n "$workspace" && "$cwd" != "$workspace" ]]; then
+      continue
+    fi
+
+    checked=$((checked + 1))
+    local resolved resolved_node resolved_thread_id detail display_cwd
+    display_cwd="${cwd:-"(no cwd)"}"
+    if resolved="$(resolve_conversation_on_node "$node_name" "$thread_id" 2>&1)"; then
+      IFS=$'\t' read -r resolved_node resolved_thread_id _ <<< "$resolved"
+      if [[ "$resolved_node" == "$node_name" && "$resolved_thread_id" == "$thread_id" ]]; then
+        detail="resolved on owner node"
+        results+=$'OK\t'"$node_name"$'\t'"$thread_id"$'\t'"$display_cwd"$'\t'"$detail"$'\n'
+      else
+        failed=$((failed + 1))
+        detail="resolved as ${resolved_node:-?}/${resolved_thread_id:-?}"
+        results+=$'FAIL\t'"$node_name"$'\t'"$thread_id"$'\t'"$display_cwd"$'\t'"$detail"$'\n'
+      fi
+    else
+      failed=$((failed + 1))
+      detail="$(printf '%s' "$resolved" | tr '\t\r\n' '   ' | sed 's/  */ /g; s/^ //; s/ $//')"
+      results+=$'FAIL\t'"$node_name"$'\t'"$thread_id"$'\t'"$display_cwd"$'\t'"${detail:-not found}"$'\n'
+    fi
+  done <<< "$rows"
+
+  [[ "$checked" -gt 0 ]] || die "no conversations matched the requested workspace"
+
+  printf '%s' "$results" | format_doctor_rows
+  echo "checked=$checked failed=$failed"
+  [[ "$failed" -eq 0 ]]
+}
+
+doctor_command() {
+  local command="${1:-conversations}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+
+  case "$command" in
+    conversations|conversation-ids) doctor_conversations "$@" ;;
+    -h|--help|"") usage ;;
+    *) die "unknown doctor command: $command" ;;
+  esac
 }
 
 send_resolved() {
@@ -1558,14 +1719,11 @@ send_message() {
     if [[ -n "$cwd" ]]; then
       remote_args+=("--cwd" "$cwd")
     fi
-    local quoted=()
-    local arg
-    for arg in "${remote_args[@]}"; do
-      quoted+=("$(printf '%q' "$arg")")
-    done
+    local quoted
+    quoted="$(quote_args "${remote_args[@]}")"
     printf '%s' "$message" |
       ssh -T -o BatchMode=yes -o ConnectTimeout=15 "$host" \
-        "PATH=\"\$HOME/.local/bin:\$PATH\"; export PATH; codex-network ${quoted[*]}"
+        "PATH=\"\$HOME/.local/bin:\$PATH\"; export PATH; codex-network $quoted"
     return
   fi
 
@@ -1591,6 +1749,7 @@ main() {
     send) send_command "$@" ;;
     http) http_command "$@" ;;
     control) control_command "$@" ;;
+    doctor) doctor_command "$@" ;;
     send-parent) send_message --local --url "$DEFAULT_PARENT_URL" "$@" ;;
     expose-parent) expose_parent "$@" ;;
     __list-local) thread_list_local "$@" ;;

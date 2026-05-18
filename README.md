@@ -151,6 +151,16 @@ Check the parent control endpoint:
 codex-network control status
 ```
 
+Validate conversation-id routing across nodes and workspaces:
+
+```bash
+codex-network doctor conversations --limit 100
+codex-network doctor conversations --workspace /path/to/workspace
+```
+
+The doctor lists recent conversations, grouped by their workspace path, and verifies that each
+conversation id resolves back to the same node and thread that listed it.
+
 ## Required Local State
 
 `~/.codex-network/nodes.tsv` maps node names to Codex app-server WebSocket URLs:
@@ -169,8 +179,9 @@ codex-remote-b
 
 `~/.codex-network/http.tsv` is managed by `codex-network http expose` and synced to remote hosts.
 
-`~/.codex-network/node` is written on remotes by `scripts/sync-remotes.sh` so a delegated
-`codex-network http expose 3000 --name app` defaults to that remote node.
+`scripts/sync-remotes.sh` writes a remote-specific `~/.codex-network/nodes.tsv` plus
+`~/.codex-network/node` so each RDE can resolve the parent, itself, and other subscribed nodes while
+default port exposes still resolve to the current remote node.
 
 ## Safety
 
@@ -199,5 +210,5 @@ The gate uses purpose-built validators for each part of the project:
 - Markdown documentation: markdownlint.
 - GitHub Actions workflow: actionlint.
 - Dependency hygiene: `npm audit --audit-level=moderate`.
-- Runtime smoke: CLI help, HTTP registry listing, host discovery, parent control, HTTP proxy, and
-  install layout.
+- Runtime smoke: CLI help, HTTP registry listing, host discovery, parent control, HTTP proxy,
+  conversation-id doctor, and install layout.

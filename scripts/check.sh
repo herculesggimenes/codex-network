@@ -113,6 +113,56 @@ FAKE
   [[ "$output" == "args:__http-stop-parent demo" ]]
 )
 
+check_conversation_doctor() (
+  set -euo pipefail
+  local tmp_dir fake_lib output
+  tmp_dir="$(mktemp -d)"
+  fake_lib="$tmp_dir/lib"
+  mkdir -p "$fake_lib"
+  trap 'rm -rf "$tmp_dir"' EXIT
+
+  cp lib/codex-network/hosts.bash "$fake_lib/hosts.bash"
+  cat > "$fake_lib/rpc.mjs" <<'NODE'
+const command = process.argv[2];
+const node = process.env.CODEX_NETWORK_NODE || "local";
+if (command === "list") {
+  console.log(`${node}\t${node}-thread\t2026-01-01T00:00:00Z\tidle\t/workspaces/${node}\t${node} title`);
+} else if (command === "resolve") {
+  const id = process.env.CODEX_NETWORK_CONVERSATION_ID;
+  const expected = `${node}-thread`;
+  if (id !== expected) process.exit(1);
+  console.log(`${node}\t${expected}\t2026-01-01T00:00:00Z\t/workspaces/${node}\t${node} title`);
+} else {
+  process.exit(1);
+}
+NODE
+
+  output="$(
+    CODEX_NETWORK_LIB_DIR="$fake_lib" \
+      CODEX_NETWORK_SKIP_READY_CHECK=1 \
+      CODEX_NETWORK_NODES_FILE="$tmp_dir/nodes.tsv" \
+      CODEX_NETWORK_HOSTS_FILE="$tmp_dir/missing-hosts" \
+      CODEX_NETWORK_SSH_CONFIG="$tmp_dir/missing-ssh-config" \
+      bin/codex-network doctor conversations --limit 5
+  )"
+  grep -q 'checked=0' <<< "$output" && return 1
+  grep -q 'failed=0' <<< "$output"
+  grep -q '/workspaces/local' <<< "$output"
+
+  printf 'local\tws://127.0.0.1:1\nremote-a\tws://127.0.0.1:2\n' > "$tmp_dir/nodes.tsv"
+  output="$(
+    CODEX_NETWORK_LIB_DIR="$fake_lib" \
+      CODEX_NETWORK_SKIP_READY_CHECK=1 \
+      CODEX_NETWORK_NODES_FILE="$tmp_dir/nodes.tsv" \
+      CODEX_NETWORK_HOSTS_FILE="$tmp_dir/missing-hosts" \
+      CODEX_NETWORK_SSH_CONFIG="$tmp_dir/missing-ssh-config" \
+      bin/codex-network doctor conversations --limit 5
+  )"
+  grep -q 'checked=2 failed=0' <<< "$output"
+  grep -q '/workspaces/local' <<< "$output"
+  grep -q '/workspaces/remote-a' <<< "$output"
+)
+
 echo "checking shell syntax"
 bash -n bin/codex-network install.sh scripts/sync-remotes.sh scripts/sync-rdes.sh lib/codex-network/hosts.bash
 echo "checking Node helper syntax"
@@ -131,6 +181,8 @@ echo "checking HTTP proxy helper"
 check_http_proxy
 echo "checking parent control helper"
 check_control_server
+echo "checking conversation id doctor"
+check_conversation_doctor
 echo "checking CLI smoke paths"
 bin/codex-network --help >/dev/null
 bin/codex-network http list >/dev/null

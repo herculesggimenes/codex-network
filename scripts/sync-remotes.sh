@@ -4,6 +4,9 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ssh_config="${CODEX_NETWORK_SSH_CONFIG:-$HOME/.ssh/config}"
 hosts_file="${CODEX_NETWORK_HOSTS_FILE:-$HOME/.codex-network/hosts}"
+nodes_file="${CODEX_NETWORK_NODES_FILE:-$HOME/.codex-network/nodes.tsv}"
+local_url="${CODEX_NETWORK_URL:-ws://127.0.0.1:49321}"
+parent_url="${CODEX_NETWORK_PARENT_URL:-ws://127.0.0.1:49322}"
 
 # shellcheck disable=SC1091
 source "$repo_dir/lib/codex-network/hosts.bash"
@@ -30,6 +33,20 @@ for host in "${hosts[@]}"; do
   scp -q -r "$repo_dir/lib/codex-network" "$host:~/.local/lib/codex-network"
   scp -q -r "$repo_dir/skills/codex-network" "$host:~/.agents/skills/codex-network"
   printf '%s\n' "$host" | ssh -o BatchMode=yes -o ConnectTimeout=20 "$host" 'cat > ~/.codex-network/node'
+  if [[ -f "$nodes_file" ]]; then
+    awk -F '\t' -v current="$host" -v current_url="$local_url" -v parent="$parent_url" '
+      NF >= 2 && $1 !~ /^#/ && $1 != "" && $2 != "" {
+        url = $2
+        if ($1 == "local") {
+          url = parent
+        }
+        if ($1 == current) {
+          url = current_url
+        }
+        print $1 "\t" url
+      }
+    ' "$nodes_file" | ssh -o BatchMode=yes -o ConnectTimeout=20 "$host" 'cat > ~/.codex-network/nodes.tsv'
+  fi
   ssh -o BatchMode=yes -o ConnectTimeout=20 "$host" \
     'chmod +x ~/.local/bin/codex-network && bash -n ~/.local/bin/codex-network && test -f ~/.local/lib/codex-network/rpc.mjs && test -f ~/.local/lib/codex-network/control-server.mjs && test -f ~/.agents/skills/codex-network/SKILL.md'
 done
