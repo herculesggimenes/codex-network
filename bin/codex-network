@@ -9,6 +9,8 @@ DEFAULT_LIST_LIMIT="${CODEX_NETWORK_LIST_LIMIT:-20}"
 DEFAULT_NODES_FILE="${CODEX_NETWORK_NODES_FILE:-$HOME/.codex-network/nodes.tsv}"
 DEFAULT_HTTP_FILE="${CODEX_NETWORK_HTTP_FILE:-$HOME/.codex-network/http.tsv}"
 DEFAULT_HTTP_BASE_PORT="${CODEX_NETWORK_HTTP_BASE_PORT:-49400}"
+DEFAULT_HOSTS_FILE="${CODEX_NETWORK_HOSTS_FILE:-$HOME/.codex-network/hosts}"
+DEFAULT_SSH_CONFIG="${CODEX_NETWORK_SSH_CONFIG:-$HOME/.ssh/config}"
 
 usage() {
   cat <<'EOF'
@@ -21,13 +23,14 @@ Usage:
   codex-network http url <name>
   codex-network http stop <name>
   codex-network serve
+  codex-network expose-parent --all-hosts
   codex-network status
 
 Native Codex app-server network helper.
 
 The protocol is Codex app-server v2 JSON-RPC over the built-in WebSocket
-transport. Conversation ids are resolved across the subscribed local/RDE nodes
-before the helper sends to the owner.
+transport. Conversation ids are resolved across the subscribed local/remote
+nodes before the helper sends to the owner.
 
 HTTP forwards are named localhost URLs exposed on every subscribed node.
 EOF
@@ -89,11 +92,25 @@ host_port_from_ws_url() {
 }
 
 managed_rde_hosts() {
-  local config="$HOME/.ssh/config"
+  if [[ -n "${CODEX_NETWORK_SSH_HOSTS:-}" ]]; then
+    printf '%s\n' "$CODEX_NETWORK_SSH_HOSTS" | tr ',' '\n' | awk '{ for (i = 1; i <= NF; i++) print $i }' | sort -u
+    return 0
+  fi
+
+  if [[ -f "$DEFAULT_HOSTS_FILE" ]]; then
+    awk '
+      $1 !~ /^#/ && $1 != "" {
+        print $1
+      }
+    ' "$DEFAULT_HOSTS_FILE" | sort -u
+    return 0
+  fi
+
+  local config="$DEFAULT_SSH_CONFIG"
   [[ -f "$config" ]] || return 0
   awk '
-    $1 == "#" && $0 ~ /BEGIN Codex RDE aliases/ { in_block = 1; next }
-    $1 == "#" && $0 ~ /END Codex RDE aliases/ { in_block = 0 }
+    $1 == "#" && ($0 ~ /BEGIN codex-network hosts/ || $0 ~ /BEGIN Codex RDE aliases/) { in_block = 1; next }
+    $1 == "#" && ($0 ~ /END codex-network hosts/ || $0 ~ /END Codex RDE aliases/) { in_block = 0 }
     in_block && tolower($1) == "host" {
       for (i = 2; i <= NF; i++) {
         if ($i !~ /[*?]/) print $i
@@ -272,7 +289,7 @@ expose_parent() {
         hosts+=("$2")
         shift 2
         ;;
-      --all-rdes)
+      --all-rdes|--all-hosts)
         all_rdes=true
         shift
         ;;
@@ -308,7 +325,7 @@ expose_parent() {
     done < <(managed_rde_hosts)
   fi
 
-  [[ ${#hosts[@]} -gt 0 ]] || die "provide --host or --all-rdes"
+  [[ ${#hosts[@]} -gt 0 ]] || die "provide --host, --all-hosts, or --all-rdes"
   [[ "$remote_port" =~ ^[0-9]+$ ]] || die "remote port must be numeric: $remote_port"
   [[ "$tmux_socket" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux socket name: $tmux_socket"
 
@@ -759,7 +776,7 @@ http_expose() {
   [[ ${#hosts[@]} -gt 0 ]] || die "http expose must run on the parent node for now"
 
   if [[ "$target_node" != "local" ]] && ! host_in_list "$target_node" "${hosts[@]}"; then
-    die "target node is not a managed RDE: $target_node"
+    die "target node is not a managed remote host: $target_node"
   fi
   if have_node_registry && ! node_exists "$target_node"; then
     die "target node is not in the subscribed node registry: $target_node"

@@ -10,10 +10,11 @@ install -d "$HOME/.agents/skills"
 rm -rf "$HOME/.agents/skills/codex-network"
 cp -R "$repo_dir/skills/codex-network" "$HOME/.agents/skills/codex-network"
 
-if [[ -d "$HOME/src/dotagents/skills" ]]; then
-  rm -rf "$HOME/src/dotagents/skills/codex-network"
-  mkdir -p "$HOME/src/dotagents/skills"
-  cp -R "$repo_dir/skills/codex-network" "$HOME/src/dotagents/skills/codex-network"
+if [[ -n "${CODEX_NETWORK_EXTRA_SKILLS_DIR:-}" ]]; then
+  install -d "$CODEX_NETWORK_EXTRA_SKILLS_DIR"
+  rm -rf "$CODEX_NETWORK_EXTRA_SKILLS_DIR/codex-network"
+  cp -R "$repo_dir/skills/codex-network" "$CODEX_NETWORK_EXTRA_SKILLS_DIR/codex-network"
+  echo "installed codex-network skill to $CODEX_NETWORK_EXTRA_SKILLS_DIR/codex-network"
 fi
 
 echo "installed codex-network to $HOME/.local/bin/codex-network"
