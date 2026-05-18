@@ -8,17 +8,16 @@
       :root {
         --bg: #f7f8fb;
         --ink: #111827;
-        --muted: #5b6472;
+        --muted: #586273;
         --panel: #ffffff;
-        --border: #cfd6e3;
+        --line: #d0d8e6;
         --blue: #2563eb;
-        --blue-soft: #dbeafe;
+        --blue-soft: #eaf2ff;
         --green: #12805c;
-        --green-soft: #dff7ec;
-        --amber: #b45309;
-        --amber-soft: #fff1d6;
-        --gray-soft: #eef1f6;
-        --shadow: 0 18px 42px rgba(31, 41, 55, 0.12);
+        --green-soft: #e2f8ee;
+        --orange: #b45309;
+        --orange-soft: #fff2d9;
+        --shadow: 0 18px 44px rgba(31, 41, 55, 0.12);
       }
 
       * {
@@ -41,150 +40,226 @@
         position: relative;
         width: min(1600px, 100vw);
         aspect-ratio: 16 / 9;
-        padding: 44px 48px 36px;
+        padding: 42px 52px 34px;
         overflow: hidden;
         background:
-          linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(247, 248, 251, 0.94)),
-          radial-gradient(circle at 18% 12%, rgba(37, 99, 235, 0.1), transparent 25%),
-          radial-gradient(circle at 86% 78%, rgba(18, 128, 92, 0.1), transparent 24%),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(247, 248, 251, 0.96)),
+          radial-gradient(circle at 54% 45%, rgba(37, 99, 235, 0.07), transparent 30%),
           var(--bg);
       }
 
-      .title {
+      header {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
-        gap: 32px;
+        gap: 48px;
       }
 
       h1 {
+        width: 840px;
         margin: 0;
-        font-size: 42px;
+        font-size: 40px;
         line-height: 1.04;
-        font-weight: 760;
+        font-weight: 790;
         letter-spacing: 0;
       }
 
       .subtitle {
-        width: 570px;
-        margin: 2px 0 0;
+        width: 610px;
+        margin: 4px 0 0;
         color: var(--muted);
-        font-size: 18px;
-        line-height: 1.45;
+        font-size: 20px;
+        line-height: 1.42;
       }
 
-      .diagram {
+      .row {
         position: absolute;
-        inset: 150px 48px 128px;
+        left: 52px;
+        right: 52px;
+        display: grid;
+        grid-template-columns: 350px 1fr;
+        gap: 26px;
       }
 
-      .box {
-        position: absolute;
-        z-index: 3;
-        border: 1px solid var(--border);
-        border-radius: 10px;
+      .row.conversations {
+        top: 178px;
+      }
+
+      .row.ports {
+        top: 456px;
+      }
+
+      .feature,
+      .board,
+      .legend-card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
         background: rgba(255, 255, 255, 0.94);
         box-shadow: var(--shadow);
       }
 
-      .box h2,
-      .box h3 {
+      .feature {
+        min-height: 248px;
+        padding: 22px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        color: #fff;
+        font-size: 16px;
+        font-weight: 800;
+      }
+
+      .badge.blue {
+        background: var(--blue);
+      }
+
+      .badge.green {
+        background: var(--green);
+      }
+
+      h2,
+      h3,
+      p {
         margin: 0;
         letter-spacing: 0;
       }
 
-      .box h2 {
-        font-size: 18px;
-        line-height: 1.1;
-        font-weight: 760;
+      .feature h2 {
+        margin-top: 18px;
+        font-size: 25px;
+        line-height: 1.12;
+        font-weight: 780;
       }
 
-      .box h3 {
-        font-size: 14px;
-        line-height: 1.2;
-        font-weight: 720;
-      }
-
-      .note {
-        margin-top: 7px;
+      .feature p {
+        margin-top: 12px;
         color: var(--muted);
-        font-size: 12px;
-        line-height: 1.35;
+        font-size: 16px;
+        line-height: 1.45;
       }
 
-      .parent {
-        left: 0;
-        top: 0;
-        width: 520px;
-        height: 442px;
+      .board {
+        position: relative;
+        min-height: 248px;
         padding: 20px;
+        overflow: hidden;
       }
 
-      .remote {
-        right: 0;
-        width: 350px;
-        height: 140px;
-        padding: 16px;
-      }
-
-      .remote.a {
-        top: 0;
-      }
-
-      .remote.b {
-        top: 151px;
-      }
-
-      .remote.c {
-        top: 302px;
-      }
-
-      .section-label {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        height: 24px;
-        padding: 0 10px;
-        border-radius: 999px;
-        background: var(--gray-soft);
-        color: #344054;
-        font-size: 12px;
-        font-weight: 700;
-        text-transform: uppercase;
-      }
-
-      .stack {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
-        margin-top: 16px;
-      }
-
-      .module {
-        min-height: 82px;
+      .node {
+        position: absolute;
+        z-index: 2;
+        width: 210px;
+        min-height: 94px;
         padding: 14px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
         background: #fbfcff;
       }
 
-      .module.full {
-        grid-column: 1 / -1;
+      .node h3 {
+        font-size: 15px;
+        font-weight: 760;
       }
 
-      .module.blue {
-        border-color: rgba(37, 99, 235, 0.35);
+      .node p {
+        margin-top: 7px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.35;
+      }
+
+      .node.blue {
+        border-color: rgba(37, 99, 235, 0.36);
         background: var(--blue-soft);
       }
 
-      .module.green {
-        border-color: rgba(18, 128, 92, 0.35);
+      .node.green {
+        border-color: rgba(18, 128, 92, 0.38);
         background: var(--green-soft);
       }
 
-      .module.amber {
-        border-color: rgba(180, 83, 9, 0.32);
-        background: var(--amber-soft);
+      .hub {
+        position: absolute;
+        z-index: 3;
+        left: 50%;
+        top: 50%;
+        width: 290px;
+        min-height: 112px;
+        padding: 18px;
+        border: 1px solid rgba(37, 99, 235, 0.34);
+        border-radius: 13px;
+        background: #ffffff;
+        box-shadow: 0 20px 48px rgba(31, 41, 55, 0.16);
+        text-align: center;
+        transform: translate(-50%, -50%);
+      }
+
+      .hub h3 {
+        font-size: 22px;
+        font-weight: 800;
+      }
+
+      .hub p {
+        margin-top: 7px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.35;
+      }
+
+      .left-node {
+        left: 28px;
+        top: 76px;
+      }
+
+      .top-node {
+        right: 52px;
+        top: 24px;
+      }
+
+      .bottom-node {
+        right: 52px;
+        bottom: 24px;
+      }
+
+      .source-node {
+        left: 28px;
+        top: 72px;
+      }
+
+      .target-top {
+        right: 52px;
+        top: 32px;
+      }
+
+      .target-bottom {
+        right: 52px;
+        bottom: 32px;
+      }
+
+      .hint {
+        position: absolute;
+        z-index: 4;
+        left: 50%;
+        bottom: 20px;
+        width: 380px;
+        padding: 9px 12px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: rgba(255, 255, 255, 0.96);
+        color: #344054;
+        font-size: 13px;
+        line-height: 1.35;
+        transform: translateX(-50%);
+      }
+
+      .ports .hint {
+        bottom: 18px;
       }
 
       code {
@@ -192,314 +267,169 @@
         border-radius: 5px;
         background: rgba(17, 24, 39, 0.06);
         font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-        font-size: 0.95em;
+        font-size: 0.93em;
       }
 
-      .remote-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 10px;
-        margin-top: 12px;
-      }
-
-      .pill {
-        min-height: 56px;
-        padding: 10px;
-        border-radius: 8px;
-        border: 1px solid var(--border);
-        background: #fbfcff;
-        font-size: 12px;
-        line-height: 1.3;
-      }
-
-      .pill strong {
-        display: block;
-        margin-bottom: 3px;
-        font-size: 13px;
-      }
-
-      .arrow {
+      svg {
         position: absolute;
-        z-index: 2;
-        height: 4px;
-        border-radius: 999px;
-        transform-origin: left center;
-      }
-
-      .arrow::after {
-        content: "";
-        position: absolute;
-        right: -8px;
-        top: -5px;
-        width: 0;
-        height: 0;
-        border-top: 7px solid transparent;
-        border-bottom: 7px solid transparent;
-        border-left: 12px solid currentColor;
-      }
-
-      .arrow.blue {
-        color: var(--blue);
-        background: var(--blue);
-      }
-
-      .arrow.green {
-        color: var(--green);
-        background: var(--green);
-      }
-
-      .arrow.gray {
-        color: #71717a;
-        background: repeating-linear-gradient(
-          90deg,
-          #71717a 0,
-          #71717a 10px,
-          transparent 10px,
-          transparent 18px
-        );
-      }
-
-      .label {
-        position: absolute;
-        z-index: 4;
-        max-width: 250px;
-        padding: 8px 10px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.96);
-        box-shadow: 0 10px 24px rgba(31, 41, 55, 0.1);
-        color: #344054;
-        font-size: 12px;
-        line-height: 1.35;
-      }
-
-      .label strong {
-        display: block;
-        margin-bottom: 2px;
-        color: var(--ink);
-        font-size: 13px;
+        inset: 0;
+        z-index: 1;
       }
 
       .legend {
         position: absolute;
-        left: 48px;
-        right: 48px;
-        bottom: 35px;
-        z-index: 5;
+        left: 52px;
+        right: 52px;
+        bottom: 34px;
         display: grid;
-        grid-template-columns: 1.1fr 1.1fr 1fr 1.35fr;
-        gap: 12px;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
       }
 
-      .legend-item {
-        min-height: 64px;
-        padding: 12px 14px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.92);
-        font-size: 12px;
-        line-height: 1.35;
-      }
-
-      .legend-item strong {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin-bottom: 5px;
+      .legend-card {
+        min-height: 76px;
+        padding: 13px 15px;
+        color: var(--muted);
         font-size: 13px;
+        line-height: 1.34;
       }
 
-      .swatch {
-        width: 28px;
-        height: 4px;
-        border-radius: 999px;
-        background: #71717a;
+      .legend-card h3 {
+        margin-bottom: 5px;
+        color: var(--ink);
+        font-size: 14px;
+        font-weight: 770;
       }
 
-      .swatch.blue {
-        background: var(--blue);
-      }
-
-      .swatch.green {
-        background: var(--green);
-      }
-
-      .swatch.gray {
-        background: repeating-linear-gradient(
-          90deg,
-          #71717a 0,
-          #71717a 8px,
-          transparent 8px,
-          transparent 14px
-        );
-      }
-
-      .constraint {
-        border-color: rgba(180, 83, 9, 0.28);
-        background: #fffaf0;
-      }
-
-      .a1 {
-        left: 520px;
-        top: 68px;
-        width: 595px;
-      }
-
-      .a2 {
-        left: 520px;
-        top: 190px;
-        width: 595px;
-      }
-
-      .a3 {
-        left: 520px;
-        top: 323px;
-        width: 595px;
-      }
-
-      .g1 {
-        left: 520px;
-        top: 261px;
-        width: 595px;
-      }
-
-      .g2 {
-        left: 520px;
-        top: 387px;
-        width: 595px;
-      }
-
-      .registry-sync {
-        left: 510px;
-        top: 430px;
-        width: 608px;
-      }
-
-      .label-conv {
-        left: 600px;
-        top: 18px;
-      }
-
-      .label-http {
-        left: 620px;
-        top: 236px;
-      }
-
-      .label-sync {
-        left: 616px;
-        top: 398px;
+      .legend-card.boundary {
+        border-color: rgba(180, 83, 9, 0.34);
+        background: var(--orange-soft);
       }
     </style>
   </head>
   <body>
-    <main class="canvas" aria-label="codex-network architecture diagram">
-      <header class="title">
-        <div>
-          <h1>codex-network: cross-environment control plane</h1>
-        </div>
+    <main class="canvas" aria-label="codex-network simplified architecture diagram">
+      <header>
+        <h1>codex-network connects Codex chats and local ports across machines</h1>
         <p class="subtitle">
-          A small local helper lets engineers address conversations and localhost services
-          by stable ids and names, while the implementation stays scoped to Codex
-          app-server, SSH tunnels, and local registry files.
+          Instead of treating each Codex session as local-only, codex-network gives
+          every connected environment a shared way to reach conversations and localhost
+          services elsewhere.
         </p>
       </header>
 
-      <section class="diagram">
-        <article class="box parent">
-          <span class="section-label">Parent machine</span>
-          <div class="stack">
-            <div class="module full blue">
-              <h2>codex-network CLI</h2>
-              <p class="note">
-                Public interface: <code>conversation id</code>, <code>node</code>,
-                <code>port</code>, and <code>forward name</code>.
-              </p>
-            </div>
-            <div class="module">
-              <h3>Conversation registry</h3>
-              <p class="note"><code>nodes.tsv</code> maps node names to Codex app-server WebSocket URLs.</p>
-            </div>
-            <div class="module">
-              <h3>HTTP registry</h3>
-              <p class="note"><code>http.tsv</code> stores named forwards and the shared localhost URL.</p>
-            </div>
-            <div class="module green">
-              <h3>SSH tunnel controller</h3>
-              <p class="note">tmux owns long-lived <code>ssh -L</code> and <code>ssh -R</code> sessions.</p>
-            </div>
-            <div class="module amber">
-              <h3>Local scope only</h3>
-              <p class="note">No public ingress, no central server, no new auth model.</p>
-            </div>
-          </div>
+      <section class="row conversations" aria-label="Conversation network">
+        <article class="feature">
+          <span class="badge blue">1</span>
+          <h2>Conversation network</h2>
+          <p>
+            A chat can send a message or request to any other Codex conversation,
+            even when that conversation lives on another laptop, VM, container, or RDE.
+          </p>
         </article>
 
-        <article class="box remote a">
-          <span class="section-label">Environment A</span>
-          <div class="remote-grid">
-            <div class="pill"><strong>Codex app-server</strong>threads, turns, steering</div>
-            <div class="pill"><strong>localhost service</strong><code>127.0.0.1:3000</code></div>
+        <article class="board">
+          <svg viewBox="0 0 1070 248" role="img" aria-label="Conversation routing lines">
+            <defs>
+              <marker id="arrow-blue" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto">
+                <path d="M2,2 L10,6 L2,10 Z" fill="#2563eb"></path>
+              </marker>
+            </defs>
+            <line x1="238" y1="123" x2="390" y2="123" stroke="#2563eb" stroke-width="4" marker-end="url(#arrow-blue)"></line>
+            <line x1="681" y1="101" x2="824" y2="74" stroke="#2563eb" stroke-width="4" marker-end="url(#arrow-blue)"></line>
+            <line x1="681" y1="146" x2="824" y2="177" stroke="#2563eb" stroke-width="4" marker-end="url(#arrow-blue)"></line>
+          </svg>
+
+          <div class="node blue left-node">
+            <h3>Connection A</h3>
+            <p>Conversation <code>chat-a1</code> asks another chat to continue work.</p>
+          </div>
+
+          <div class="hub">
+            <h3>codex-network</h3>
+            <p>Resolves the conversation id to the machine that owns it.</p>
+          </div>
+
+          <div class="node blue top-node">
+            <h3>Connection B</h3>
+            <p>Receives routed messages for <code>chat-b1</code>.</p>
+          </div>
+
+          <div class="node blue bottom-node">
+            <h3>Connection C</h3>
+            <p>Receives routed messages for <code>chat-c1</code>.</p>
+          </div>
+
+          <div class="hint">
+            Example: <code>codex-network send chat-c1 "continue from here"</code>
           </div>
         </article>
+      </section>
 
-        <article class="box remote b">
-          <span class="section-label">Environment B</span>
-          <div class="remote-grid">
-            <div class="pill"><strong>Codex app-server</strong>threads, turns, steering</div>
-            <div class="pill"><strong>localhost service</strong><code>127.0.0.1:5173</code></div>
-          </div>
+      <section class="row ports" aria-label="Port forwarding network">
+        <article class="feature">
+          <span class="badge green">2</span>
+          <h2>Port forwarding network</h2>
+          <p>
+            A local service in one connection can be exposed to another connection
+            with a stable name. Engineers avoid building SSH forwarding chains by hand.
+          </p>
         </article>
 
-        <article class="box remote c">
-          <span class="section-label">Environment C</span>
-          <div class="remote-grid">
-            <div class="pill"><strong>Codex app-server</strong>threads, turns, steering</div>
-            <div class="pill"><strong>shared URL</strong><code>127.0.0.1:49400</code></div>
+        <article class="board">
+          <svg viewBox="0 0 1070 248" role="img" aria-label="Port forwarding lines">
+            <defs>
+              <marker id="arrow-green" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto">
+                <path d="M2,2 L10,6 L2,10 Z" fill="#12805c"></path>
+              </marker>
+            </defs>
+            <line x1="238" y1="123" x2="390" y2="123" stroke="#12805c" stroke-width="4" marker-end="url(#arrow-green)"></line>
+            <line x1="681" y1="100" x2="824" y2="74" stroke="#12805c" stroke-width="4" marker-end="url(#arrow-green)"></line>
+            <line x1="681" y1="146" x2="824" y2="177" stroke="#12805c" stroke-width="4" marker-end="url(#arrow-green)"></line>
+          </svg>
+
+          <div class="node green source-node">
+            <h3>Connection A</h3>
+            <p>Runs a service at <code>127.0.0.1:3000</code>.</p>
+          </div>
+
+          <div class="hub">
+            <h3>codex-network</h3>
+            <p>Creates named localhost forwarding between connections.</p>
+          </div>
+
+          <div class="node green target-top">
+            <h3>Connection B</h3>
+            <p>Opens <code>review-app</code> at a local URL.</p>
+          </div>
+
+          <div class="node green target-bottom">
+            <h3>Connection C</h3>
+            <p>Uses the same <code>127.0.0.1:49400</code> URL.</p>
+          </div>
+
+          <div class="hint">
+            Example: <code>codex-network http expose A:3000 --name review-app</code>
           </div>
         </article>
-
-        <div class="arrow blue a1"></div>
-        <div class="arrow blue a2"></div>
-        <div class="arrow blue a3"></div>
-        <div class="arrow green g1"></div>
-        <div class="arrow green g2"></div>
-        <div class="arrow gray registry-sync"></div>
-
-        <div class="label label-conv">
-          <strong>Conversation route</strong>
-          Resolve the owner, then send <code>thread/resume</code> +
-          <code>turn/start</code> or <code>turn/steer</code> over WebSocket JSON-RPC.
-        </div>
-
-        <div class="label label-http">
-          <strong>HTTP route</strong>
-          Source service stays on localhost. The parent creates the source tunnel and
-          reverse tunnels so every environment gets the same local URL.
-        </div>
-
-        <div class="label label-sync">
-          <strong>Registry sync</strong>
-          Small TSV files keep names stable without exposing raw app-server or SSH details.
-        </div>
       </section>
 
       <footer class="legend">
-        <div class="legend-item">
-          <strong><span class="swatch blue"></span>Codex control path</strong>
-          JSON-RPC over the built-in Codex app-server WebSocket API.
+        <div class="legend-card">
+          <h3>Simple input</h3>
+          Users pass conversation ids, connection names, ports, and forward names.
         </div>
-        <div class="legend-item">
-          <strong><span class="swatch green"></span>HTTP data path</strong>
-          Native SSH localhost forwarding, managed by tmux.
+        <div class="legend-card">
+          <h3>Conversation path</h3>
+          Uses Codex app-server WebSocket JSON-RPC to resume, steer, or start turns.
         </div>
-        <div class="legend-item">
-          <strong><span class="swatch gray"></span>Registry path</strong>
-          Node and forward metadata synced as local files.
+        <div class="legend-card">
+          <h3>Port path</h3>
+          Uses SSH localhost forwarding under the hood, managed by tmux.
         </div>
-        <div class="legend-item constraint">
-          <strong>Boundary</strong>
-          This is private developer networking: all exposed URLs bind to
-          <code>127.0.0.1</code>.
+        <div class="legend-card boundary">
+          <h3>Boundary</h3>
+          Private developer networking only. Shared ports bind to <code>127.0.0.1</code>.
         </div>
       </footer>
     </main>
