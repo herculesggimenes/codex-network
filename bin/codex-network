@@ -14,6 +14,7 @@ DEFAULT_SSH_CONFIG="${CODEX_NETWORK_SSH_CONFIG:-$HOME/.ssh/config}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${CODEX_NETWORK_LIB_DIR:-$SCRIPT_DIR/../lib/codex-network}"
 RPC_SCRIPT="$LIB_DIR/rpc.mjs"
+HTTP_PROXY_SCRIPT="$LIB_DIR/http-proxy.mjs"
 
 # shellcheck disable=SC1091
 if [[ -f "$LIB_DIR/hosts.bash" ]]; then
@@ -55,6 +56,27 @@ require_command() {
 
 require_rpc_script() {
   [[ -f "$RPC_SCRIPT" ]] || die "missing Codex RPC helper: $RPC_SCRIPT"
+}
+
+require_http_proxy_script() {
+  [[ -f "$HTTP_PROXY_SCRIPT" ]] || die "missing HTTP proxy helper: $HTTP_PROXY_SCRIPT"
+}
+
+validate_ssh_host_alias() {
+  if declare -F validate_codex_network_host_alias >/dev/null; then
+    validate_codex_network_host_alias "$1"
+    return
+  fi
+  [[ "$1" =~ ^[A-Za-z0-9_.@-]+$ ]]
+}
+
+managed_hosts_checked() {
+  local host
+  while IFS= read -r host; do
+    [[ -n "$host" ]] || continue
+    validate_ssh_host_alias "$host" || die "unsafe SSH host alias: $host"
+    printf '%s\n' "$host"
+  done < <(managed_hosts)
 }
 
 http_url_for_ws() {
@@ -316,7 +338,7 @@ expose_parent() {
     local managed_host
     while IFS= read -r managed_host; do
       [[ -n "$managed_host" ]] && hosts+=("$managed_host")
-    done < <(managed_hosts)
+    done < <(managed_hosts_checked)
   fi
 
   [[ ${#hosts[@]} -gt 0 ]] || die "provide --host, --all-hosts, or --all-rdes"
@@ -333,7 +355,7 @@ expose_parent() {
   local seen=" "
   local host
   for host in "${hosts[@]}"; do
-    [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "unsafe SSH host alias: $host"
+    validate_ssh_host_alias "$host" || die "unsafe SSH host alias: $host"
     if [[ "$seen" == *" $host "* ]]; then
       continue
     fi
@@ -444,12 +466,16 @@ lookup_http_registry() {
 remove_http_registry_entry() {
   local name="$1"
   local registry_dir tmp
-  registry_dir="${DEFAULT_HTTP_FILE%/*}"
+  registry_dir="$(dirname "$DEFAULT_HTTP_FILE")"
   mkdir -p "$registry_dir"
   touch "$DEFAULT_HTTP_FILE"
-  tmp="${DEFAULT_HTTP_FILE}.$$"
-  awk -F '\t' -v name="$name" 'NF >= 1 && $1 != name { print }' "$DEFAULT_HTTP_FILE" > "$tmp"
-  mv "$tmp" "$DEFAULT_HTTP_FILE"
+  tmp="$(mktemp "$registry_dir/http.tsv.XXXXXX")"
+  if awk -F '\t' -v name="$name" 'NF >= 1 && $1 != name { print }' "$DEFAULT_HTTP_FILE" > "$tmp"; then
+    mv "$tmp" "$DEFAULT_HTTP_FILE"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 upsert_http_registry_entry() {
@@ -459,7 +485,7 @@ upsert_http_registry_entry() {
   local listen_port="$4"
   local url="$5"
   local registry_dir
-  registry_dir="${DEFAULT_HTTP_FILE%/*}"
+  registry_dir="$(dirname "$DEFAULT_HTTP_FILE")"
   mkdir -p "$registry_dir"
   remove_http_registry_entry "$name"
   printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$target_node" "$target_port" "$listen_port" "$url" >> "$DEFAULT_HTTP_FILE"
@@ -468,7 +494,7 @@ upsert_http_registry_entry() {
 sync_http_registry_to_hosts() {
   local host
   local registry_dir
-  registry_dir="${DEFAULT_HTTP_FILE%/*}"
+  registry_dir="$(dirname "$DEFAULT_HTTP_FILE")"
   mkdir -p "$registry_dir"
   touch "$DEFAULT_HTTP_FILE"
 
@@ -476,7 +502,7 @@ sync_http_registry_to_hosts() {
   require_command scp
   require_command ssh
   for host in "$@"; do
-    [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "unsafe SSH host alias: $host"
+    validate_ssh_host_alias "$host" || die "unsafe SSH host alias: $host"
     if ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "mkdir -p \"\$HOME/.codex-network\"" &&
       scp -q "$DEFAULT_HTTP_FILE" "$host:~/.codex-network/http.tsv"; then
       :
@@ -575,11 +601,10 @@ start_local_http_proxy() {
   local target_host="$3"
   local target_port="$4"
   local session="codex-network-http-${name}-local"
-  local node_script
-  node_script='const net=require("net");const listen=Number(process.env.LISTEN_PORT);const targetHost=process.env.TARGET_HOST;const targetPort=Number(process.env.TARGET_PORT);const server=net.createServer((client)=>{const upstream=net.connect(targetPort,targetHost);const close=()=>{client.destroy();upstream.destroy();};client.on("error",close);upstream.on("error",close);client.pipe(upstream);upstream.pipe(client);});server.on("error",(error)=>{console.error(error.message);process.exit(1);});server.listen(listen,"127.0.0.1");'
   require_command node
+  require_http_proxy_script
   tmux_start_command "$session" http-proxy \
-    env "LISTEN_PORT=$listen_port" "TARGET_HOST=$target_host" "TARGET_PORT=$target_port" node -e "$node_script"
+    env "LISTEN_PORT=$listen_port" "TARGET_HOST=$target_host" "TARGET_PORT=$target_port" node "$HTTP_PROXY_SCRIPT"
 }
 
 start_ssh_http_source() {
@@ -589,7 +614,7 @@ start_ssh_http_source() {
   local listen_port="$4"
   local session="codex-network-http-${name}-source"
 
-  [[ "$target_node" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "unsafe SSH host alias: $target_node"
+  validate_ssh_host_alias "$target_node" || die "unsafe SSH host alias: $target_node"
   require_command ssh
   tmux_start_command "$session" http-source \
     ssh -N \
@@ -606,7 +631,7 @@ start_ssh_http_reverse() {
   local listen_port="$3"
   local session="codex-network-http-${name}-to-${host}"
 
-  [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "unsafe SSH host alias: $host"
+  validate_ssh_host_alias "$host" || die "unsafe SSH host alias: $host"
   require_command ssh
   tmux_start_command "$session" http-reverse \
     ssh -N \
@@ -642,17 +667,6 @@ http_url() {
   awk -F '\t' 'NF >= 5 { print $5; exit }' <<< "$row"
 }
 
-load_managed_hosts_array() {
-  local hosts_var="$1"
-  local host
-  eval "$hosts_var=()"
-  while IFS= read -r host; do
-    [[ -n "$host" ]] || continue
-    [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "unsafe SSH host alias: $host"
-    eval "$hosts_var+=(\"\$host\")"
-  done < <(managed_hosts)
-}
-
 http_stop() {
   local name="${1:-}"
   [[ -n "$name" ]] || die "HTTP forward name is required"
@@ -664,7 +678,10 @@ http_stop() {
   fi
 
   local hosts=()
-  load_managed_hosts_array hosts
+  local host
+  while IFS= read -r host; do
+    hosts+=("$host")
+  done < <(managed_hosts_checked)
   [[ ${#hosts[@]} -gt 0 ]] || die "http stop must run on the parent node for now"
 
   require_command tmux
@@ -761,10 +778,15 @@ http_expose() {
 
   [[ -n "$target_port" ]] || die "target port is required"
   validate_port "target port" "$target_port"
-  [[ "$target_node" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe target node name: $target_node"
+  if [[ "$target_node" != "local" ]]; then
+    validate_ssh_host_alias "$target_node" || die "unsafe target node name: $target_node"
+  fi
 
   local hosts=()
-  load_managed_hosts_array hosts
+  local host
+  while IFS= read -r host; do
+    hosts+=("$host")
+  done < <(managed_hosts_checked)
   [[ ${#hosts[@]} -gt 0 ]] || die "http expose must run on the parent node for now"
 
   if [[ "$target_node" != "local" ]] && ! host_in_list "$target_node" "${hosts[@]}"; then
@@ -794,7 +816,6 @@ http_expose() {
     port_open_local "$listen_port" && die "listen port is already in use locally: $listen_port"
   fi
 
-  local host
   for host in "${hosts[@]}"; do
     if [[ "$host" == "$target_node" && "$listen_port" == "$target_port" ]]; then
       continue
@@ -1018,8 +1039,7 @@ list_conversations() {
     thread_list_local --node local --limit "$limit" --search "$search" || true
 
     local host
-    for host in $(managed_hosts); do
-      [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || continue
+    while IFS= read -r host; do
       local remote_args=(__list-local --node "$host" --limit "$limit")
       if [[ -n "$search" ]]; then
         remote_args+=(--search "$search")
@@ -1029,10 +1049,10 @@ list_conversations() {
       for arg in "${remote_args[@]}"; do
         quoted+=("$(printf '%q' "$arg")")
       done
-      ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" \
+      ssh -n -o BatchMode=yes -o ConnectTimeout=15 "$host" \
         "PATH=\"\$HOME/.local/bin:\$PATH\"; export PATH; codex-network ${quoted[*]}" || \
         echo "warning: unable to list conversations on $host" >&2
-    done
+    done < <(managed_hosts_checked)
   } | sort -t "$(printf '\t')" -k3,3r | format_conversation_rows
 }
 
@@ -1073,21 +1093,20 @@ resolve_conversation() {
 
   require_command ssh
   local host
-  for host in $(managed_hosts); do
-    [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || continue
+  while IFS= read -r host; do
     local remote_args=(__resolve-local --node "$host" --conversation-id "$conversation_id")
     local quoted=()
     local arg
     for arg in "${remote_args[@]}"; do
       quoted+=("$(printf '%q' "$arg")")
     done
-    if output="$(ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" \
+    if output="$(ssh -n -o BatchMode=yes -o ConnectTimeout=15 "$host" \
       "PATH=\"\$HOME/.local/bin:\$PATH\"; export PATH; codex-network ${quoted[*]}" 2>/dev/null)"; then
       while IFS= read -r line; do
         [[ -n "$line" ]] && matches+="$line"$'\t'$'\n'
       done <<< "$output"
     fi
-  done
+  done < <(managed_hosts_checked)
 
   local count
   count="$(printf '%s' "$matches" | awk 'NF { n++ } END { print n + 0 }')"
@@ -1231,6 +1250,7 @@ send_message() {
   fi
 
   if [[ -n "$host" && "$local_only" != true ]]; then
+    validate_ssh_host_alias "$host" || die "unsafe SSH host alias: $host"
     require_command ssh
     local remote_args=()
     remote_args+=("send" "--local" "--url" "$url" "--thread-id" "$thread_id")
@@ -1243,7 +1263,8 @@ send_message() {
       quoted+=("$(printf '%q' "$arg")")
     done
     printf '%s' "$message" |
-      ssh -T "$host" "PATH=\"\$HOME/.local/bin:\$PATH\"; export PATH; codex-network ${quoted[*]}"
+      ssh -T -o BatchMode=yes -o ConnectTimeout=15 "$host" \
+        "PATH=\"\$HOME/.local/bin:\$PATH\"; export PATH; codex-network ${quoted[*]}"
     return
   fi
 

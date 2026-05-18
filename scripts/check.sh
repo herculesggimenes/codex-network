@@ -4,10 +4,80 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
+port_open_local() {
+  local port="$1"
+  (exec 3<>"/dev/tcp/127.0.0.1/${port}") >/dev/null 2>&1
+}
+
+pick_available_port() {
+  local port="$1"
+  local end=$((port + 99))
+  while ((port <= end)); do
+    if ! port_open_local "$port"; then
+      printf '%s\n' "$port"
+      return
+    fi
+    port=$((port + 1))
+  done
+  echo "unable to find an available local port" >&2
+  return 1
+}
+
+wait_for_local_port() {
+  local port="$1"
+  for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+    port_open_local "$port" && return 0
+    sleep 0.2
+  done
+  return 1
+}
+
+check_http_proxy() (
+  set -euo pipefail
+  local origin_port listen_port server_pid proxy_pid
+  origin_port="$(pick_available_port 49531)"
+  listen_port="$(pick_available_port "$((origin_port + 1))")"
+  server_pid=""
+  proxy_pid=""
+
+  trap '[[ -n "$proxy_pid" ]] && kill "$proxy_pid" 2>/dev/null || true; [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null || true' EXIT
+
+  PORT="$origin_port" node --input-type=module <<'NODE' &
+import http from "node:http";
+
+const port = Number(process.env.PORT);
+http
+  .createServer((_request, response) => {
+    response.end("codex-network-proxy-ok\n");
+  })
+  .listen({ host: "127.0.0.1", port });
+NODE
+  server_pid=$!
+  wait_for_local_port "$origin_port"
+
+  LISTEN_PORT="$listen_port" TARGET_HOST=127.0.0.1 TARGET_PORT="$origin_port" node lib/codex-network/http-proxy.mjs &
+  proxy_pid=$!
+
+  for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if PROXY_URL="http://127.0.0.1:${listen_port}" node --input-type=module 2>/dev/null <<'NODE'
+const response = await fetch(process.env.PROXY_URL);
+const body = await response.text();
+if (body.trim() !== "codex-network-proxy-ok") process.exit(1);
+NODE
+    then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+)
+
 echo "checking shell syntax"
 bash -n bin/codex-network install.sh scripts/sync-remotes.sh scripts/sync-rdes.sh lib/codex-network/hosts.bash
 echo "checking Node helper syntax"
-node --check lib/codex-network/rpc.mjs
+for script in eslint.config.mjs lib/codex-network/*.mjs; do
+  node --check "$script"
+done
 echo "checking Node WebSocket runtime"
 node -e 'if (!globalThis.WebSocket) process.exit(1)'
 echo "checking linters"
@@ -16,6 +86,8 @@ echo "checking formatting"
 npm run format:check
 echo "checking dependency audit"
 npm audit --audit-level=moderate
+echo "checking HTTP proxy helper"
+check_http_proxy
 echo "checking CLI smoke paths"
 bin/codex-network --help >/dev/null
 bin/codex-network http list >/dev/null
@@ -39,4 +111,5 @@ trap 'rm -rf "$tmp_home"' EXIT
 HOME="$tmp_home" ./install.sh >/dev/null
 HOME="$tmp_home" "$tmp_home/.local/bin/codex-network" --help >/dev/null
 test -f "$tmp_home/.local/lib/codex-network/rpc.mjs"
+test -f "$tmp_home/.local/lib/codex-network/http-proxy.mjs"
 test -f "$tmp_home/.agents/skills/codex-network/SKILL.md"

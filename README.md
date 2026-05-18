@@ -175,7 +175,7 @@ npm run check
 The gate uses purpose-built validators for each part of the project:
 
 - Bash CLI and install/sync scripts: `bash -n` and ShellCheck.
-- Node WebSocket helper: `node --check` and ESLint.
+- Node WebSocket and TCP proxy helpers: `node --check` and ESLint.
 - Markdown, HTML, YAML, JSON, and ESM formatting: Prettier.
 - Markdown documentation: markdownlint.
 - GitHub Actions workflow: actionlint.

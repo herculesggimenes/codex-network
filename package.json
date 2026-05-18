@@ -14,7 +14,7 @@
     "format:check": "prettier --check \"**/*.{html,json,md,mjs,yml,yaml}\"",
     "lint": "npm run lint:js && npm run lint:shell && npm run lint:markdown && npm run lint:actions",
     "lint:actions": "github-actionlint",
-    "lint:js": "eslint lib/codex-network/rpc.mjs eslint.config.mjs",
+    "lint:js": "eslint .",
     "lint:markdown": "markdownlint-cli2 \"*.md\" \"skills/**/*.md\"",
     "lint:shell": "shellcheck -x bin/codex-network install.sh scripts/*.sh lib/codex-network/*.bash"
   },
