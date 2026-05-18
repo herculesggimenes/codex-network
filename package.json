@@ -1,0 +1,30 @@
+{
+  "name": "codex-network",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Codex conversation networking and localhost HTTP forwarding across local and remote development environments.",
+  "type": "module",
+  "packageManager": "npm@11.11.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "check": "scripts/check.sh",
+    "format": "prettier --write \"**/*.{html,json,md,mjs,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{html,json,md,mjs,yml,yaml}\"",
+    "lint": "npm run lint:js && npm run lint:shell && npm run lint:markdown && npm run lint:actions",
+    "lint:actions": "github-actionlint",
+    "lint:js": "eslint lib/codex-network/rpc.mjs eslint.config.mjs",
+    "lint:markdown": "markdownlint-cli2 \"*.md\" \"skills/**/*.md\"",
+    "lint:shell": "shellcheck -x bin/codex-network install.sh scripts/*.sh lib/codex-network/*.bash"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.4.0",
+    "github-actionlint": "^1.7.12",
+    "globals": "^17.6.0",
+    "markdownlint-cli2": "^0.22.1",
+    "prettier": "^3.8.3",
+    "shellcheck": "^3.1.0"
+  }
+}

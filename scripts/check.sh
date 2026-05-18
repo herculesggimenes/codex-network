@@ -10,13 +10,19 @@ echo "checking Node helper syntax"
 node --check lib/codex-network/rpc.mjs
 echo "checking Node WebSocket runtime"
 node -e 'if (!globalThis.WebSocket) process.exit(1)'
+echo "checking linters"
+npm run lint
+echo "checking formatting"
+npm run format:check
+echo "checking dependency audit"
+npm audit --audit-level=moderate
 echo "checking CLI smoke paths"
 bin/codex-network --help >/dev/null
 bin/codex-network http list >/dev/null
 
 echo "checking host discovery"
 actual="$(
-  CODEX_NETWORK_SSH_HOSTS='beta,alpha alpha' bash -lc '
+  CODEX_NETWORK_SSH_HOSTS='beta,alpha alpha' bash -c '
     source lib/codex-network/hosts.bash
     discover_codex_network_hosts /tmp/missing-codex-network-hosts /tmp/missing-codex-network-ssh-config
   '

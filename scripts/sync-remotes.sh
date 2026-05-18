@@ -5,7 +5,7 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ssh_config="${CODEX_NETWORK_SSH_CONFIG:-$HOME/.ssh/config}"
 hosts_file="${CODEX_NETWORK_HOSTS_FILE:-$HOME/.codex-network/hosts}"
 
-# shellcheck source=../lib/codex-network/hosts.bash
+# shellcheck disable=SC1091
 source "$repo_dir/lib/codex-network/hosts.bash"
 
 hosts=()

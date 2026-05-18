@@ -15,7 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${CODEX_NETWORK_LIB_DIR:-$SCRIPT_DIR/../lib/codex-network}"
 RPC_SCRIPT="$LIB_DIR/rpc.mjs"
 
-# shellcheck source=../lib/codex-network/hosts.bash
+# shellcheck disable=SC1091
 if [[ -f "$LIB_DIR/hosts.bash" ]]; then
   source "$LIB_DIR/hosts.bash"
 fi
@@ -136,8 +136,7 @@ ensure_server_ready() {
     return 1
   fi
   serve --url "$url" >/dev/null
-  local attempt
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  for _attempt in 1 2 3 4 5 6 7 8 9 10; do
     if command -v curl >/dev/null 2>&1 && curl -fsS "$http_url/readyz" >/dev/null 2>&1; then
       return
     fi
@@ -501,8 +500,7 @@ port_open_remote() {
 
 wait_port_open_local() {
   local port="$1"
-  local attempt
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  for _attempt in 1 2 3 4 5 6 7 8 9 10; do
     port_open_local "$port" && return 0
     sleep 0.3
   done
@@ -512,8 +510,7 @@ wait_port_open_local() {
 wait_port_open_remote() {
   local host="$1"
   local port="$2"
-  local attempt
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  for _attempt in 1 2 3 4 5 6 7 8 9 10; do
     port_open_remote "$host" "$port" && return 0
     sleep 0.3
   done
@@ -1145,8 +1142,8 @@ send_resolved() {
 
   local resolved
   resolved="$(resolve_conversation "$conversation_id")"
-  local node_name thread_id updated_at cwd title endpoint_url
-  IFS=$'\t' read -r node_name thread_id updated_at cwd title endpoint_url <<< "$resolved"
+  local node_name thread_id _updated_at cwd _title endpoint_url
+  IFS=$'\t' read -r node_name thread_id _updated_at cwd _title endpoint_url <<< "$resolved"
 
   echo "resolved: node=$node_name conversation=$thread_id" >&2
   if [[ -n "${endpoint_url:-}" ]]; then

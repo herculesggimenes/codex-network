@@ -2,18 +2,20 @@
 
 `codex-network` is a local/remote networking helper for Codex desktop sessions.
 
-It is not Brex-specific. It needs Codex CLI/app-server, SSH access to remote
-developer environments, `tmux`, `curl`, and a Node.js runtime with WebSocket
-support. The Codex app-server methods used here are experimental, so pinning or
-checking against your Codex CLI version is sensible before depending on this in
-automation.
+It is not Brex-specific. It needs Codex CLI/app-server, SSH access to remote developer environments,
+`tmux`, `curl`, and Node.js 24 or newer for the native WebSocket runtime. The Codex app-server
+methods used here are experimental, so pinning or checking against your Codex CLI version is
+sensible before depending on this in automation.
 
 It does two things:
 
-1. Lists and sends messages to Codex conversations across the local machine and subscribed remote environments by conversation id.
-2. Exposes named HTTP forwards so the same `http://127.0.0.1:<port>` URL works from the parent machine and every subscribed remote environment.
+1. Lists and sends messages to Codex conversations across the local machine and subscribed remote
+   environments by conversation id.
+2. Exposes named HTTP forwards so the same `http://127.0.0.1:<port>` URL works from the parent
+   machine and every subscribed remote environment.
 
-The helper intentionally hides low-level SSH tunnel and app-server endpoint details from the normal CLI. In day-to-day use, pass conversation ids, node names, ports, and forward names.
+The helper intentionally hides low-level SSH tunnel and app-server endpoint details from the normal
+CLI. In day-to-day use, pass conversation ids, node names, ports, and forward names.
 
 ## Under The Hood
 
@@ -22,8 +24,10 @@ Conversation networking uses Codex app-server v2 JSON-RPC over the built-in WebS
 HTTP forwarding uses native SSH tunnels:
 
 - `ssh -L` from the parent to the source environment.
-- `ssh -R` from the parent into each subscribed remote host, so every node gets the same localhost URL.
-- A tiny Node TCP proxy is used only when remapping a parent-local service from one localhost port to another.
+- `ssh -R` from the parent into each subscribed remote host, so every node gets the same localhost
+  URL.
+- A tiny Node TCP proxy is used only when remapping a parent-local service from one localhost port
+  to another.
 
 ## Architecture
 
@@ -75,12 +79,11 @@ Host codex-remote-b
 # END codex-network hosts
 ```
 
-The older `# BEGIN Codex RDE aliases` block is still supported for existing setups.
-The `scripts/sync-rdes.sh` script remains as a compatibility wrapper.
+The older `# BEGIN Codex RDE aliases` block is still supported for existing setups. The
+`scripts/sync-rdes.sh` script remains as a compatibility wrapper.
 
-`codex-network` loads helper code from `../lib/codex-network` relative to the
-binary. Override that with `CODEX_NETWORK_LIB_DIR` if you use a custom install
-layout.
+`codex-network` loads helper code from `../lib/codex-network` relative to the binary. Override that
+with `CODEX_NETWORK_LIB_DIR` if you use a custom install layout.
 
 ## Conversation Commands
 
@@ -130,7 +133,9 @@ Stop a forward:
 codex-network http stop review-app
 ```
 
-Creating and stopping mesh HTTP forwards currently runs from the parent machine, because the parent owns the SSH aliases and tmux tunnel sessions. Listing and resolving named URLs works from each remote host after registry sync.
+Creating and stopping mesh HTTP forwards currently runs from the parent machine, because the parent
+owns the SSH aliases and tmux tunnel sessions. Listing and resolving named URLs works from each
+remote host after registry sync.
 
 ## Required Local State
 
@@ -157,3 +162,22 @@ codex-remote-b
 - Ports are validated before tunnel creation.
 - The helper does not print OAuth tokens or Codex credentials.
 - The public workflow avoids raw app-server URLs and raw SSH tunnel arguments.
+
+## Validation
+
+Run the full gate locally with:
+
+```bash
+npm ci
+npm run check
+```
+
+The gate uses purpose-built validators for each part of the project:
+
+- Bash CLI and install/sync scripts: `bash -n` and ShellCheck.
+- Node WebSocket helper: `node --check` and ESLint.
+- Markdown, HTML, YAML, JSON, and ESM formatting: Prettier.
+- Markdown documentation: markdownlint.
+- GitHub Actions workflow: actionlint.
+- Dependency hygiene: `npm audit --audit-level=moderate`.
+- Runtime smoke: CLI help, HTTP registry listing, host discovery, and install layout.
