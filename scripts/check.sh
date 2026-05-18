@@ -163,6 +163,71 @@ NODE
   grep -q '/workspaces/remote-a' <<< "$output"
 )
 
+check_stale_app_server_session_restart() (
+  set -euo pipefail
+  local tmp_dir fake_bin log output
+  tmp_dir="$(mktemp -d)"
+  fake_bin="$tmp_dir/bin"
+  log="$tmp_dir/tmux.log"
+  mkdir -p "$fake_bin"
+  trap 'rm -rf "$tmp_dir"' EXIT
+
+  cat > "$fake_bin/codex" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+  cat > "$fake_bin/curl" <<'FAKE'
+#!/usr/bin/env bash
+[[ "${FAKE_CURL_READY:-0}" == "1" ]]
+FAKE
+  cat > "$fake_bin/node" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+  cat > "$fake_bin/tmux" <<'FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-L" ]]; then
+  shift 2
+fi
+case "${1:-}" in
+  has-session)
+    [[ ! -f "${FAKE_TMUX_KILLED:?}" ]]
+    ;;
+  kill-session)
+    touch "${FAKE_TMUX_KILLED:?}"
+    printf 'kill %s\n' "$*" >> "${FAKE_TMUX_LOG:?}"
+    ;;
+  new-session)
+    rm -f "${FAKE_TMUX_KILLED:?}"
+    printf 'new %s\n' "$*" >> "${FAKE_TMUX_LOG:?}"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+FAKE
+  chmod +x "$fake_bin/codex" "$fake_bin/curl" "$fake_bin/node" "$fake_bin/tmux"
+
+  output="$(PATH="$fake_bin:$PATH" FAKE_TMUX_KILLED="$tmp_dir/tmux-killed" FAKE_TMUX_LOG="$log" bin/codex-network serve --url ws://127.0.0.1:49999 2>&1)"
+  grep -q 'restarting stale codex app-server tmux session' <<< "$output"
+  grep -q '^kill ' "$log"
+  grep -q '^new ' "$log"
+
+  : > "$log"
+  rm -f "$tmp_dir/tmux-killed"
+  output="$(PATH="$fake_bin:$PATH" FAKE_CURL_READY=1 FAKE_TMUX_KILLED="$tmp_dir/tmux-killed" FAKE_TMUX_LOG="$log" bin/codex-network serve --url ws://127.0.0.1:49999 2>&1)"
+  grep -q 'codex app-server already running' <<< "$output"
+  [[ ! -s "$log" ]]
+
+  : > "$log"
+  rm -f "$tmp_dir/tmux-killed"
+  output="$(PATH="$fake_bin:$PATH" FAKE_TMUX_KILLED="$tmp_dir/tmux-killed" FAKE_TMUX_LOG="$log" bin/codex-network control serve --port 49998 2>&1)"
+  grep -q 'restarting stale control server tmux session' <<< "$output"
+  grep -q '^kill ' "$log"
+  grep -q '^new ' "$log"
+)
+
 echo "checking shell syntax"
 bash -n bin/codex-network install.sh scripts/sync-remotes.sh scripts/sync-rdes.sh lib/codex-network/hosts.bash
 echo "checking Node helper syntax"
@@ -183,6 +248,8 @@ echo "checking parent control helper"
 check_control_server
 echo "checking conversation id doctor"
 check_conversation_doctor
+echo "checking stale app-server session restart"
+check_stale_app_server_session_restart
 echo "checking CLI smoke paths"
 bin/codex-network --help >/dev/null
 bin/codex-network http list >/dev/null

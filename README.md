@@ -2,10 +2,10 @@
 
 `codex-network` is a local/remote networking helper for Codex desktop sessions.
 
-It needs Codex CLI/app-server, SSH access to remote developer environments,
-`tmux`, `curl`, and Node.js 24 or newer for the native WebSocket runtime. The Codex app-server
-methods used here are experimental, so pinning or checking against your Codex CLI version is
-sensible before depending on this in automation.
+It needs Codex CLI/app-server, SSH access to remote developer environments, `tmux`, `curl`, and
+Node.js 24 or newer for the native WebSocket runtime. The Codex app-server methods used here are
+experimental, so pinning or checking against your Codex CLI version is sensible before depending on
+this in automation.
 
 It does two things:
 

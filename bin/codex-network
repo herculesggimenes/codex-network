@@ -171,6 +171,52 @@ host_port_from_ws_url() {
   printf '%s %s\n' "$host" "$port"
 }
 
+server_ready() {
+  local url="$1"
+  local http_url
+  http_url="$(http_url_for_ws "$url")"
+  command -v curl >/dev/null 2>&1 && curl -fsS "$http_url/readyz" >/dev/null 2>&1
+}
+
+recover_tmux_socket() {
+  local socket="$1"
+  local socket_path
+  socket_path="/tmp/tmux-$(id -u)/$socket"
+
+  ps -eo pid=,command= | awk -v socket="$socket" -v self="$$" '
+    $1 != self && index($0, "tmux -L " socket " ") { print $1 }
+  ' | while IFS= read -r pid; do
+    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+  done
+  rm -f "$socket_path"
+}
+
+tmux_command() {
+  local socket="$1"
+  shift
+  local output status
+
+  output="$(tmux -L "$socket" "$@" 2>&1)"
+  status=$?
+  if [[ "$status" -eq 0 ]]; then
+    [[ -n "$output" ]] && printf '%s\n' "$output"
+    return 0
+  fi
+
+  if [[ "$output" == *"server exited unexpectedly"* ]]; then
+    recover_tmux_socket "$socket"
+    output="$(tmux -L "$socket" "$@" 2>&1)"
+    status=$?
+    if [[ "$status" -eq 0 ]]; then
+      [[ -n "$output" ]] && printf '%s\n' "$output"
+      return 0
+    fi
+  fi
+
+  [[ -n "$output" ]] && printf '%s\n' "$output" >&2
+  return "$status"
+}
+
 managed_hosts() {
   declare -F discover_codex_network_hosts >/dev/null || die "missing host discovery helper: $LIB_DIR/hosts.bash"
   discover_codex_network_hosts "$DEFAULT_HOSTS_FILE" "$DEFAULT_SSH_CONFIG"
@@ -192,14 +238,12 @@ read_node_registry() {
 ensure_server_ready() {
   local url="$1"
   local allow_start="${2:-true}"
-  local http_url
-  http_url="$(http_url_for_ws "$url")"
 
   if [[ "${CODEX_NETWORK_SKIP_READY_CHECK:-}" == "1" || "${CODEX_NETWORK_SKIP_READY_CHECK:-}" == "true" ]]; then
     return
   fi
 
-  if command -v curl >/dev/null 2>&1 && curl -fsS "$http_url/readyz" >/dev/null 2>&1; then
+  if server_ready "$url"; then
     return
   fi
 
@@ -209,7 +253,7 @@ ensure_server_ready() {
   fi
   serve --url "$url" >/dev/null
   for _attempt in 1 2 3 4 5 6 7 8 9 10; do
-    if command -v curl >/dev/null 2>&1 && curl -fsS "$http_url/readyz" >/dev/null 2>&1; then
+    if server_ready "$url"; then
       return
     fi
     sleep 0.5
@@ -266,12 +310,16 @@ serve() {
   [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $session"
   [[ "$tmux_socket" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux socket name: $tmux_socket"
 
-  if tmux -L "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
-    echo "codex app-server already running in tmux session: $session"
-    return
+  if tmux_command "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
+    if server_ready "$url"; then
+      echo "codex app-server already running in tmux session: $session"
+      return
+    fi
+    echo "restarting stale codex app-server tmux session: $session" >&2
+    tmux_command "$tmux_socket" kill-session -t "$session" >/dev/null 2>&1 || true
   fi
 
-  tmux -L "$tmux_socket" new-session -d -s "$session" -n app-server -c "$HOME" \
+  tmux_command "$tmux_socket" new-session -d -s "$session" -n app-server -c "$HOME" \
     "$SHELL" -lc "codex app-server --listen $(printf '%q' "$url"); exec \"\$SHELL\" -l"
   echo "started codex app-server in tmux session: $session"
   echo "endpoint: $url"
@@ -296,9 +344,7 @@ status() {
     esac
   done
 
-  local http_url
-  http_url="$(http_url_for_ws "$url")"
-  if command -v curl >/dev/null 2>&1 && curl -fsS "$http_url/readyz" >/dev/null; then
+  if server_ready "$url"; then
     echo "ready: $url"
   else
     die "not ready: $url"
@@ -308,6 +354,13 @@ status() {
 control_url_for_port() {
   local port="$1"
   printf 'http://127.0.0.1:%s\n' "$port"
+}
+
+control_ready() {
+  local port="$1"
+  local control_url
+  control_url="$(control_url_for_port "$port")"
+  command -v curl >/dev/null 2>&1 && curl -fsS "$control_url/readyz" >/dev/null 2>&1
 }
 
 control_status() {
@@ -332,7 +385,7 @@ control_status() {
   validate_port "control port" "$port"
   local control_url
   control_url="$(control_url_for_port "$port")"
-  if command -v curl >/dev/null 2>&1 && curl -fsS "$control_url/readyz" >/dev/null; then
+  if control_ready "$port"; then
     echo "ready: $control_url"
   else
     die "not ready: $control_url"
@@ -391,15 +444,19 @@ control_serve() {
   [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $session"
   [[ "$tmux_socket" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux socket name: $tmux_socket"
 
-  if tmux -L "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
-    echo "control server already running in tmux session: $session"
-    return
+  if tmux_command "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
+    if control_ready "$port"; then
+      echo "control server already running in tmux session: $session"
+      return
+    fi
+    echo "restarting stale control server tmux session: $session" >&2
+    tmux_command "$tmux_socket" kill-session -t "$session" >/dev/null 2>&1 || true
   fi
 
   local quoted_script quoted_bin
   quoted_script="$(printf '%q' "$CONTROL_SERVER_SCRIPT")"
   quoted_bin="$(printf '%q' "$SCRIPT_DIR/codex-network")"
-  tmux -L "$tmux_socket" new-session -d -s "$session" -n control -c "$HOME" \
+  tmux_command "$tmux_socket" new-session -d -s "$session" -n control -c "$HOME" \
     "$SHELL" -lc "exec env CODEX_NETWORK_BIN=$quoted_bin CODEX_NETWORK_CONTROL_PORT=$(printf '%q' "$port") node $quoted_script"
   echo "started control server in tmux session: $session"
   echo "endpoint: $(control_url_for_port "$port")"
@@ -433,8 +490,8 @@ control_stop() {
   require_command tmux
   [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $session"
   [[ "$tmux_socket" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux socket name: $tmux_socket"
-  if tmux -L "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
-    tmux -L "$tmux_socket" kill-session -t "$session"
+  if tmux_command "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
+    tmux_command "$tmux_socket" kill-session -t "$session" >/dev/null
     echo "stopped control server tmux session: $session"
   else
     echo "control server tmux session not running: $session"
@@ -461,13 +518,13 @@ ensure_control_ready() {
   local control_url
   control_url="$(control_url_for_port "$port")"
 
-  if command -v curl >/dev/null 2>&1 && curl -fsS "$control_url/readyz" >/dev/null 2>&1; then
+  if control_ready "$port"; then
     return
   fi
 
   control_serve --port "$port" >/dev/null
   for _attempt in 1 2 3 4 5 6 7 8 9 10; do
-    if command -v curl >/dev/null 2>&1 && curl -fsS "$control_url/readyz" >/dev/null 2>&1; then
+    if control_ready "$port"; then
       return
     fi
     sleep 0.5
@@ -504,12 +561,31 @@ stop() {
   require_command tmux
   [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $session"
   [[ "$tmux_socket" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux socket name: $tmux_socket"
-  if tmux -L "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
-    tmux -L "$tmux_socket" kill-session -t "$session"
+  if tmux_command "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
+    tmux_command "$tmux_socket" kill-session -t "$session" >/dev/null
     echo "stopped tmux session: $session"
   else
     echo "tmux session not running: $session"
   fi
+}
+
+remote_readyz() {
+  local host="$1"
+  local port="$2"
+  ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" \
+    "curl -fsS http://127.0.0.1:${port}/readyz >/dev/null" >/dev/null 2>&1
+}
+
+wait_remote_readyz() {
+  local host="$1"
+  local port="$2"
+  for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if remote_readyz "$host" "$port"; then
+      return
+    fi
+    sleep 0.5
+  done
+  return 1
 }
 
 expose_parent() {
@@ -580,6 +656,7 @@ expose_parent() {
 
   require_command tmux
   require_command ssh
+  ensure_server_ready "$parent_url" true
   if [[ "$expose_control" == true ]]; then
     ensure_control_ready "$control_port"
   fi
@@ -602,9 +679,18 @@ expose_parent() {
     local session="codex-network-parent-$session_host"
     [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $session"
 
-    if tmux -L "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
-      echo "parent tunnel already running for $host in tmux session: $session"
-    else
+    local parent_tunnel_ready=false
+    if tmux_command "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
+      if remote_readyz "$host" "$remote_port"; then
+        echo "parent tunnel already running for $host in tmux session: $session"
+        parent_tunnel_ready=true
+      else
+        echo "restarting stale parent tunnel for $host in tmux session: $session" >&2
+        tmux_command "$tmux_socket" kill-session -t "$session" >/dev/null 2>&1 || true
+      fi
+    fi
+
+    if [[ "$parent_tunnel_ready" != true ]]; then
       local ssh_args=(
         ssh
         -N
@@ -617,13 +703,12 @@ expose_parent() {
       local quoted
       quoted="$(quote_args "${ssh_args[@]}")"
 
-      tmux -L "$tmux_socket" new-session -d -s "$session" -n parent-tunnel -c "$HOME" \
+      tmux_command "$tmux_socket" new-session -d -s "$session" -n parent-tunnel -c "$HOME" \
         "$SHELL" -lc "exec $quoted"
       echo "started parent tunnel for $host in tmux session: $session"
     fi
 
-    if ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" \
-      "curl -fsS http://127.0.0.1:${remote_port}/readyz >/dev/null"; then
+    if wait_remote_readyz "$host" "$remote_port"; then
       echo "verified parent endpoint on $host: ws://127.0.0.1:${remote_port}"
     else
       echo "warning: parent endpoint not ready on $host: ws://127.0.0.1:${remote_port}" >&2
@@ -636,9 +721,18 @@ expose_parent() {
     local control_session="codex-network-control-$session_host"
     [[ "$control_session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $control_session"
 
-    if tmux -L "$tmux_socket" has-session -t "$control_session" >/dev/null 2>&1; then
-      echo "parent control tunnel already running for $host in tmux session: $control_session"
-    else
+    local control_tunnel_ready=false
+    if tmux_command "$tmux_socket" has-session -t "$control_session" >/dev/null 2>&1; then
+      if remote_readyz "$host" "$control_port"; then
+        echo "parent control tunnel already running for $host in tmux session: $control_session"
+        control_tunnel_ready=true
+      else
+        echo "restarting stale parent control tunnel for $host in tmux session: $control_session" >&2
+        tmux_command "$tmux_socket" kill-session -t "$control_session" >/dev/null 2>&1 || true
+      fi
+    fi
+
+    if [[ "$control_tunnel_ready" != true ]]; then
       local control_ssh_args=(
         ssh
         -N
@@ -651,13 +745,12 @@ expose_parent() {
       local control_quoted
       control_quoted="$(quote_args "${control_ssh_args[@]}")"
 
-      tmux -L "$tmux_socket" new-session -d -s "$control_session" -n parent-control -c "$HOME" \
+      tmux_command "$tmux_socket" new-session -d -s "$control_session" -n parent-control -c "$HOME" \
         "$SHELL" -lc "exec $control_quoted"
       echo "started parent control tunnel for $host in tmux session: $control_session"
     fi
 
-    if ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" \
-      "curl -fsS http://127.0.0.1:${control_port}/readyz >/dev/null"; then
+    if wait_remote_readyz "$host" "$control_port"; then
       echo "verified parent control endpoint on $host: http://127.0.0.1:${control_port}"
     else
       echo "warning: parent control endpoint not ready on $host: http://127.0.0.1:${control_port}" >&2
@@ -866,7 +959,7 @@ tmux_start_command() {
   [[ "$DEFAULT_TMUX_SOCKET" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux socket name: $DEFAULT_TMUX_SOCKET"
   [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $session"
 
-  if tmux -L "$DEFAULT_TMUX_SOCKET" has-session -t "$session" >/dev/null 2>&1; then
+  if tmux_command "$DEFAULT_TMUX_SOCKET" has-session -t "$session" >/dev/null 2>&1; then
     echo "HTTP forward session already running: $session"
     return
   fi
@@ -874,9 +967,30 @@ tmux_start_command() {
   local quoted
   quoted="$(quote_args "$@")"
 
-  tmux -L "$DEFAULT_TMUX_SOCKET" new-session -d -s "$session" -n "$window" -c "$HOME" \
+  tmux_command "$DEFAULT_TMUX_SOCKET" new-session -d -s "$session" -n "$window" -c "$HOME" \
     "$SHELL" -lc "exec $quoted"
   echo "started HTTP forward session: $session"
+}
+
+restart_stale_local_http_session() {
+  local session="$1"
+  local listen_port="$2"
+
+  if tmux_command "$DEFAULT_TMUX_SOCKET" has-session -t "$session" >/dev/null 2>&1 && ! port_open_local "$listen_port"; then
+    echo "restarting stale HTTP forward session: $session" >&2
+    tmux_command "$DEFAULT_TMUX_SOCKET" kill-session -t "$session" >/dev/null 2>&1 || true
+  fi
+}
+
+restart_stale_remote_http_session() {
+  local session="$1"
+  local host="$2"
+  local listen_port="$3"
+
+  if tmux_command "$DEFAULT_TMUX_SOCKET" has-session -t "$session" >/dev/null 2>&1 && ! port_open_remote "$host" "$listen_port"; then
+    echo "restarting stale HTTP forward session: $session" >&2
+    tmux_command "$DEFAULT_TMUX_SOCKET" kill-session -t "$session" >/dev/null 2>&1 || true
+  fi
 }
 
 start_local_http_proxy() {
@@ -887,6 +1001,7 @@ start_local_http_proxy() {
   local session="codex-network-http-${name}-local"
   require_command node
   require_http_proxy_script
+  restart_stale_local_http_session "$session" "$listen_port"
   tmux_start_command "$session" http-proxy \
     env "LISTEN_PORT=$listen_port" "TARGET_HOST=$target_host" "TARGET_PORT=$target_port" node "$HTTP_PROXY_SCRIPT"
 }
@@ -900,6 +1015,7 @@ start_ssh_http_source() {
 
   validate_ssh_host_alias "$target_node" || die "unsafe SSH host alias: $target_node"
   require_command ssh
+  restart_stale_local_http_session "$session" "$listen_port"
   tmux_start_command "$session" http-source \
     ssh -N \
       -o ExitOnForwardFailure=yes \
@@ -917,6 +1033,7 @@ start_ssh_http_reverse() {
 
   validate_ssh_host_alias "$host" || die "unsafe SSH host alias: $host"
   require_command ssh
+  restart_stale_remote_http_session "$session" "$host" "$listen_port"
   tmux_start_command "$session" http-reverse \
     ssh -N \
       -o ExitOnForwardFailure=yes \
@@ -990,13 +1107,13 @@ http_stop_parent() {
   require_command tmux
   local prefix="codex-network-http-${name}"
   local sessions session
-  sessions="$(tmux -L "$DEFAULT_TMUX_SOCKET" list-sessions -F '#S' 2>/dev/null | awk -v prefix="$prefix" '
+  sessions="$(tmux_command "$DEFAULT_TMUX_SOCKET" list-sessions -F '#S' 2>/dev/null | awk -v prefix="$prefix" '
     $0 == prefix "-local" || $0 == prefix "-source" || index($0, prefix "-to-") == 1 { print }
   ' || true)"
 
   while IFS= read -r session; do
     [[ -n "$session" ]] || continue
-    tmux -L "$DEFAULT_TMUX_SOCKET" kill-session -t "$session" || true
+    tmux_command "$DEFAULT_TMUX_SOCKET" kill-session -t "$session" >/dev/null || true
     echo "stopped HTTP forward session: $session"
   done <<< "$sessions"
 
