@@ -4,12 +4,17 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
+echo "checking shell syntax"
 bash -n bin/codex-network install.sh scripts/sync-remotes.sh scripts/sync-rdes.sh lib/codex-network/hosts.bash
+echo "checking Node helper syntax"
 node --check lib/codex-network/rpc.mjs
+echo "checking Node WebSocket runtime"
 node -e 'if (!globalThis.WebSocket) process.exit(1)'
+echo "checking CLI smoke paths"
 bin/codex-network --help >/dev/null
 bin/codex-network http list >/dev/null
 
+echo "checking host discovery"
 actual="$(
   CODEX_NETWORK_SSH_HOSTS='beta,alpha alpha' bash -lc '
     source lib/codex-network/hosts.bash
@@ -22,6 +27,7 @@ expected=$'alpha\nbeta'
   exit 1
 }
 
+echo "checking install layout"
 tmp_home="$(mktemp -d)"
 trap 'rm -rf "$tmp_home"' EXIT
 HOME="$tmp_home" ./install.sh >/dev/null
