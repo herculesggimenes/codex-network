@@ -11,7 +11,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Bash syntax
-        run: bash -n bin/codex-network install.sh scripts/sync-remotes.sh scripts/sync-rdes.sh
-      - name: CLI help smoke
-        run: bin/codex-network --help >/dev/null
+      - name: Check
+        run: scripts/check.sh

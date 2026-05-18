@@ -11,6 +11,14 @@ DEFAULT_HTTP_FILE="${CODEX_NETWORK_HTTP_FILE:-$HOME/.codex-network/http.tsv}"
 DEFAULT_HTTP_BASE_PORT="${CODEX_NETWORK_HTTP_BASE_PORT:-49400}"
 DEFAULT_HOSTS_FILE="${CODEX_NETWORK_HOSTS_FILE:-$HOME/.codex-network/hosts}"
 DEFAULT_SSH_CONFIG="${CODEX_NETWORK_SSH_CONFIG:-$HOME/.ssh/config}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${CODEX_NETWORK_LIB_DIR:-$SCRIPT_DIR/../lib/codex-network}"
+RPC_SCRIPT="$LIB_DIR/rpc.mjs"
+
+# shellcheck source=../lib/codex-network/hosts.bash
+if [[ -f "$LIB_DIR/hosts.bash" ]]; then
+  source "$LIB_DIR/hosts.bash"
+fi
 
 usage() {
   cat <<'EOF'
@@ -43,6 +51,10 @@ die() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+require_rpc_script() {
+  [[ -f "$RPC_SCRIPT" ]] || die "missing Codex RPC helper: $RPC_SCRIPT"
 }
 
 http_url_for_ws() {
@@ -91,32 +103,9 @@ host_port_from_ws_url() {
   printf '%s %s\n' "$host" "$port"
 }
 
-managed_rde_hosts() {
-  if [[ -n "${CODEX_NETWORK_SSH_HOSTS:-}" ]]; then
-    printf '%s\n' "$CODEX_NETWORK_SSH_HOSTS" | tr ',' '\n' | awk '{ for (i = 1; i <= NF; i++) print $i }' | sort -u
-    return 0
-  fi
-
-  if [[ -f "$DEFAULT_HOSTS_FILE" ]]; then
-    awk '
-      $1 !~ /^#/ && $1 != "" {
-        print $1
-      }
-    ' "$DEFAULT_HOSTS_FILE" | sort -u
-    return 0
-  fi
-
-  local config="$DEFAULT_SSH_CONFIG"
-  [[ -f "$config" ]] || return 0
-  awk '
-    $1 == "#" && ($0 ~ /BEGIN codex-network hosts/ || $0 ~ /BEGIN Codex RDE aliases/) { in_block = 1; next }
-    $1 == "#" && ($0 ~ /END codex-network hosts/ || $0 ~ /END Codex RDE aliases/) { in_block = 0 }
-    in_block && tolower($1) == "host" {
-      for (i = 2; i <= NF; i++) {
-        if ($i !~ /[*?]/) print $i
-      }
-    }
-  ' "$config" | sort -u
+managed_hosts() {
+  declare -F discover_codex_network_hosts >/dev/null || die "missing host discovery helper: $LIB_DIR/hosts.bash"
+  discover_codex_network_hosts "$DEFAULT_HOSTS_FILE" "$DEFAULT_SSH_CONFIG"
 }
 
 have_node_registry() {
@@ -134,23 +123,29 @@ read_node_registry() {
 
 ensure_server_ready() {
   local url="$1"
+  local allow_start="${2:-true}"
   local http_url
   http_url="$(http_url_for_ws "$url")"
 
-  if command -v curl >/dev/null 2>&1 && curl -fsS "$http_url/readyz" >/dev/null; then
+  if command -v curl >/dev/null 2>&1 && curl -fsS "$http_url/readyz" >/dev/null 2>&1; then
     return
   fi
 
+  if [[ "$allow_start" != true ]]; then
+    echo "codex-network: app-server is not ready: $url" >&2
+    return 1
+  fi
   serve --url "$url" >/dev/null
   local attempt
   for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    if command -v curl >/dev/null 2>&1 && curl -fsS "$http_url/readyz" >/dev/null; then
+    if command -v curl >/dev/null 2>&1 && curl -fsS "$http_url/readyz" >/dev/null 2>&1; then
       return
     fi
     sleep 0.5
   done
 
-  die "app-server did not become ready: $url"
+  echo "codex-network: app-server did not become ready: $url" >&2
+  return 1
 }
 
 serve() {
@@ -279,7 +274,7 @@ expose_parent() {
   local parent_url="$DEFAULT_URL"
   local remote_port="${CODEX_NETWORK_PARENT_PORT:-49322}"
   local tmux_socket="$DEFAULT_TMUX_SOCKET"
-  local all_rdes=false
+  local all_hosts=false
   local hosts=()
 
   while [[ $# -gt 0 ]]; do
@@ -290,7 +285,7 @@ expose_parent() {
         shift 2
         ;;
       --all-rdes|--all-hosts)
-        all_rdes=true
+        all_hosts=true
         shift
         ;;
       --parent-url)
@@ -318,11 +313,11 @@ expose_parent() {
     esac
   done
 
-  if [[ "$all_rdes" == true ]]; then
+  if [[ "$all_hosts" == true ]]; then
     local managed_host
     while IFS= read -r managed_host; do
       [[ -n "$managed_host" ]] && hosts+=("$managed_host")
-    done < <(managed_rde_hosts)
+    done < <(managed_hosts)
   fi
 
   [[ ${#hosts[@]} -gt 0 ]] || die "provide --host, --all-hosts, or --all-rdes"
@@ -471,7 +466,7 @@ upsert_http_registry_entry() {
   printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$target_node" "$target_port" "$listen_port" "$url" >> "$DEFAULT_HTTP_FILE"
 }
 
-sync_http_registry_to_rdes() {
+sync_http_registry_to_hosts() {
   local host
   local registry_dir
   registry_dir="${DEFAULT_HTTP_FILE%/*}"
@@ -658,7 +653,7 @@ load_managed_hosts_array() {
     [[ -n "$host" ]] || continue
     [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "unsafe SSH host alias: $host"
     eval "$hosts_var+=(\"\$host\")"
-  done < <(managed_rde_hosts)
+  done < <(managed_hosts)
 }
 
 http_stop() {
@@ -689,7 +684,7 @@ http_stop() {
   done <<< "$sessions"
 
   remove_http_registry_entry "$name"
-  sync_http_registry_to_rdes "${hosts[@]}"
+  sync_http_registry_to_hosts "${hosts[@]}"
   echo "removed HTTP forward: $name"
 }
 
@@ -839,7 +834,7 @@ http_expose() {
 
   local url="http://127.0.0.1:${listen_port}"
   upsert_http_registry_entry "$name" "$target_node" "$target_port" "$listen_port" "$url"
-  sync_http_registry_to_rdes "${hosts[@]}"
+  sync_http_registry_to_hosts "${hosts[@]}"
   echo "exposed HTTP forward: $name -> ${target_node}:${target_port}"
   echo "$url"
 }
@@ -895,114 +890,17 @@ thread_list_local() {
   done
 
   [[ "$limit" =~ ^[0-9]+$ ]] || die "limit must be numeric: $limit"
-  ensure_server_ready "$url"
+  local allow_start=false
+  [[ "$url" == "$DEFAULT_URL" ]] && allow_start=true
+  ensure_server_ready "$url" "$allow_start" || return 1
   require_command node
+  require_rpc_script
 
   CODEX_NETWORK_URL="$url" \
     CODEX_NETWORK_NODE="$node_name" \
     CODEX_NETWORK_LIMIT="$limit" \
     CODEX_NETWORK_SEARCH="$search" \
-    node <<'NODE'
-const url = process.env.CODEX_NETWORK_URL;
-const nodeName = process.env.CODEX_NETWORK_NODE || "local";
-const limit = Number.parseInt(process.env.CODEX_NETWORK_LIMIT || "20", 10);
-const search = process.env.CODEX_NETWORK_SEARCH || "";
-
-let nextId = 1;
-const pending = new Map();
-const timeout = setTimeout(() => fail("thread/list timed out"), 15000);
-
-function fail(error) {
-  const message = error && error.message ? error.message : String(error);
-  console.error(message);
-  process.exit(1);
-}
-
-function request(ws, method, params) {
-  const id = nextId++;
-  const promise = new Promise((resolve, reject) => pending.set(id, { resolve, reject, method }));
-  ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
-  return promise;
-}
-
-function notify(ws, method, params) {
-  ws.send(JSON.stringify({ jsonrpc: "2.0", method, params }));
-}
-
-function field(value) {
-  return String(value ?? "").replace(/\t/g, " ").replace(/\r?\n/g, " ");
-}
-
-function statusOf(thread) {
-  const status = thread?.status;
-  if (typeof status === "string") return status;
-  if (status && typeof status.type === "string") return status.type;
-  return "";
-}
-
-function titleOf(thread) {
-  const title = thread?.name || thread?.preview || "";
-  return title.replace(/\s+/g, " ").trim();
-}
-
-function isoTime(seconds) {
-  if (!Number.isFinite(seconds)) return "";
-  return new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-const ws = new WebSocket(url);
-ws.addEventListener("open", async () => {
-  try {
-    await request(ws, "initialize", {
-      clientInfo: { name: "codex-network", title: "Codex Network", version: "0.1.0" },
-      capabilities: { experimentalApi: true },
-    });
-    notify(ws, "initialized", null);
-    const result = await request(ws, "thread/list", {
-      limit,
-      sortKey: "updated_at",
-      sortDirection: "desc",
-      archived: false,
-      useStateDbOnly: false,
-      searchTerm: search || null,
-    });
-
-    for (const thread of result?.data || []) {
-      const row = [
-        nodeName,
-        thread.id,
-        isoTime(thread.updatedAt),
-        statusOf(thread),
-        thread.cwd || "",
-        titleOf(thread),
-      ];
-      console.log(row.map(field).join("\t"));
-    }
-    clearTimeout(timeout);
-    process.exit(0);
-  } catch (error) {
-    clearTimeout(timeout);
-    fail(error);
-  }
-});
-
-ws.addEventListener("message", (event) => {
-  let msg;
-  try {
-    msg = JSON.parse(event.data);
-  } catch {
-    return;
-  }
-  if (Object.prototype.hasOwnProperty.call(msg, "id") && pending.has(msg.id)) {
-    const { resolve, reject, method } = pending.get(msg.id);
-    pending.delete(msg.id);
-    if (msg.error) reject(new Error(`${method} failed: ${JSON.stringify(msg.error)}`));
-    else resolve(msg.result);
-  }
-});
-
-ws.addEventListener("error", (event) => fail(event.error || "websocket error"));
-NODE
+    node "$RPC_SCRIPT" list
 }
 
 resolve_local() {
@@ -1046,137 +944,17 @@ resolve_local() {
 
   [[ -n "$conversation_id" ]] || die "conversation id is required"
   [[ "$max_scan" =~ ^[0-9]+$ ]] || die "max scan must be numeric: $max_scan"
-  ensure_server_ready "$url"
+  local allow_start=false
+  [[ "$url" == "$DEFAULT_URL" ]] && allow_start=true
+  ensure_server_ready "$url" "$allow_start" || return 1
   require_command node
+  require_rpc_script
 
   CODEX_NETWORK_URL="$url" \
     CODEX_NETWORK_NODE="$node_name" \
     CODEX_NETWORK_CONVERSATION_ID="$conversation_id" \
     CODEX_NETWORK_MAX_SCAN="$max_scan" \
-    node <<'NODE'
-const url = process.env.CODEX_NETWORK_URL;
-const nodeName = process.env.CODEX_NETWORK_NODE || "local";
-const needle = process.env.CODEX_NETWORK_CONVERSATION_ID || "";
-const maxScan = Number.parseInt(process.env.CODEX_NETWORK_MAX_SCAN || "2000", 10);
-
-let nextId = 1;
-const pending = new Map();
-const timeout = setTimeout(() => fail("conversation resolution timed out"), 20000);
-
-function fail(error) {
-  const message = error && error.message ? error.message : String(error);
-  console.error(message);
-  process.exit(1);
-}
-
-function request(ws, method, params) {
-  const id = nextId++;
-  const promise = new Promise((resolve, reject) => pending.set(id, { resolve, reject, method }));
-  ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
-  return promise;
-}
-
-function notify(ws, method, params) {
-  ws.send(JSON.stringify({ jsonrpc: "2.0", method, params }));
-}
-
-function field(value) {
-  return String(value ?? "").replace(/\t/g, " ").replace(/\r?\n/g, " ");
-}
-
-function titleOf(thread) {
-  const title = thread?.name || thread?.preview || "";
-  return title.replace(/\s+/g, " ").trim();
-}
-
-function isoTime(seconds) {
-  if (!Number.isFinite(seconds)) return "";
-  return new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-function matches(thread) {
-  return thread?.id === needle ||
-    thread?.sessionId === needle ||
-    String(thread?.id || "").startsWith(needle) ||
-    String(thread?.sessionId || "").startsWith(needle);
-}
-
-function printMatch(thread) {
-  console.log([
-    nodeName,
-    thread.id,
-    isoTime(thread.updatedAt),
-    thread.cwd || "",
-    titleOf(thread),
-  ].map(field).join("\t"));
-}
-
-const ws = new WebSocket(url);
-ws.addEventListener("open", async () => {
-  try {
-    await request(ws, "initialize", {
-      clientInfo: { name: "codex-network", title: "Codex Network", version: "0.1.0" },
-      capabilities: { experimentalApi: true },
-    });
-    notify(ws, "initialized", null);
-
-    let cursor = null;
-    let scanned = 0;
-    const matchesFound = [];
-    while (scanned < maxScan) {
-      const pageLimit = Math.min(100, maxScan - scanned);
-      const result = await request(ws, "thread/list", {
-        cursor,
-        limit: pageLimit,
-        sortKey: "updated_at",
-        sortDirection: "desc",
-        archived: false,
-        useStateDbOnly: false,
-      });
-      const data = result?.data || [];
-      for (const thread of data) {
-        if (matches(thread)) matchesFound.push(thread);
-      }
-      scanned += data.length;
-      if (!result?.nextCursor || data.length === 0) break;
-      cursor = result.nextCursor;
-    }
-
-    if (matchesFound.length === 0 && /^[0-9a-fA-F-]{36}$/.test(needle)) {
-      try {
-        const read = await request(ws, "thread/read", { threadId: needle, includeTurns: false });
-        if (read?.thread) matchesFound.push(read.thread);
-      } catch {
-        // A missing exact thread is a normal result while scanning multiple nodes.
-      }
-    }
-
-    for (const thread of matchesFound) printMatch(thread);
-    clearTimeout(timeout);
-    process.exit(matchesFound.length > 0 ? 0 : 1);
-  } catch (error) {
-    clearTimeout(timeout);
-    fail(error);
-  }
-});
-
-ws.addEventListener("message", (event) => {
-  let msg;
-  try {
-    msg = JSON.parse(event.data);
-  } catch {
-    return;
-  }
-  if (Object.prototype.hasOwnProperty.call(msg, "id") && pending.has(msg.id)) {
-    const { resolve, reject, method } = pending.get(msg.id);
-    pending.delete(msg.id);
-    if (msg.error) reject(new Error(`${method} failed: ${JSON.stringify(msg.error)}`));
-    else resolve(msg.result);
-  }
-});
-
-ws.addEventListener("error", (event) => fail(event.error || "websocket error"));
-NODE
+    node "$RPC_SCRIPT" resolve
 }
 
 format_conversation_rows() {
@@ -1230,7 +1008,7 @@ list_conversations() {
       local node_name node_url
       while IFS=$'\t' read -r node_name node_url; do
         [[ -n "$node_name" && -n "$node_url" ]] || continue
-        thread_list_local --node "$node_name" --url "$node_url" --limit "$limit" --search "$search" || \
+        thread_list_local --node "$node_name" --url "$node_url" --limit "$limit" --search "$search" 2>/dev/null || \
           echo "warning: unable to list conversations on $node_name" >&2
       done < <(read_node_registry)
     } | sort -t "$(printf '\t')" -k3,3r | format_conversation_rows
@@ -1243,7 +1021,7 @@ list_conversations() {
     thread_list_local --node local --limit "$limit" --search "$search" || true
 
     local host
-    for host in $(managed_rde_hosts); do
+    for host in $(managed_hosts); do
       [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || continue
       local remote_args=(__list-local --node "$host" --limit "$limit")
       if [[ -n "$search" ]]; then
@@ -1298,7 +1076,7 @@ resolve_conversation() {
 
   require_command ssh
   local host
-  for host in $(managed_rde_hosts); do
+  for host in $(managed_hosts); do
     [[ "$host" =~ ^[A-Za-z0-9_.@-]+$ ]] || continue
     local remote_args=(__resolve-local --node "$host" --conversation-id "$conversation_id")
     local quoted=()
@@ -1473,147 +1251,12 @@ send_message() {
   fi
 
   require_command node
+  require_rpc_script
   CODEX_NETWORK_URL="$url" \
     CODEX_NETWORK_THREAD_ID="$thread_id" \
     CODEX_NETWORK_CWD="$cwd" \
     CODEX_NETWORK_MESSAGE="$message" \
-    node <<'NODE'
-const url = process.env.CODEX_NETWORK_URL;
-const threadId = process.env.CODEX_NETWORK_THREAD_ID;
-const cwd = process.env.CODEX_NETWORK_CWD || "";
-const message = process.env.CODEX_NETWORK_MESSAGE || "";
-
-let nextId = 1;
-const pending = new Map();
-let targetTurnId = null;
-let completed = false;
-
-function fail(error) {
-  const message = error && error.message ? error.message : String(error);
-  console.error(message);
-  process.exit(1);
-}
-
-function request(ws, method, params) {
-  const id = nextId++;
-  const payload = { jsonrpc: "2.0", id, method, params };
-  const promise = new Promise((resolve, reject) => pending.set(id, { resolve, reject, method }));
-  ws.send(JSON.stringify(payload));
-  return promise;
-}
-
-function notify(ws, method, params) {
-  ws.send(JSON.stringify({ jsonrpc: "2.0", method, params }));
-}
-
-function itemText(item) {
-  if (!item || typeof item !== "object") return null;
-  if (item.type === "agentMessage" && typeof item.text === "string") return item.text;
-  if (item.type === "reasoning" && typeof item.text === "string") return item.text;
-  if (typeof item.text === "string" && (item.type || "").toLowerCase().includes("agent")) return item.text;
-  return null;
-}
-
-const ws = new WebSocket(url);
-
-ws.addEventListener("open", async () => {
-  try {
-    await request(ws, "initialize", {
-      clientInfo: {
-        name: "codex-network",
-        title: "Codex Network",
-        version: "0.1.0",
-      },
-      capabilities: {
-        experimentalApi: true,
-        optOutNotificationMethods: [
-          "item/reasoning_text/delta",
-          "item/reasoning_summary_text/delta",
-        ],
-      },
-    });
-    notify(ws, "initialized", null);
-
-    const resumeParams = { threadId };
-    if (cwd) resumeParams.cwd = cwd;
-    const resume = await request(ws, "thread/resume", resumeParams);
-    const resolvedThreadId = resume?.thread?.id || threadId;
-    const activeTurn = Array.isArray(resume?.thread?.turns)
-      ? [...resume.thread.turns].reverse().find((turn) => turn?.status === "inProgress")
-      : null;
-
-    const input = [{ type: "text", text: message, textElements: [] }];
-    if (activeTurn?.id) {
-      const steer = await request(ws, "turn/steer", {
-        threadId: resolvedThreadId,
-        expectedTurnId: activeTurn.id,
-        input,
-      });
-      targetTurnId = steer?.turnId || activeTurn.id;
-      console.error(`steered: thread=${resolvedThreadId} turn=${targetTurnId}`);
-      return;
-    }
-
-    const turn = await request(ws, "turn/start", { threadId: resolvedThreadId, input });
-    targetTurnId = turn?.turn?.id;
-    if (!targetTurnId) {
-      throw new Error(`turn/start response did not include turn.id: ${JSON.stringify(turn)}`);
-    }
-    console.error(`sent: thread=${resolvedThreadId} turn=${targetTurnId}`);
-  } catch (error) {
-    fail(error);
-  }
-});
-
-ws.addEventListener("message", (event) => {
-  let msg;
-  try {
-    msg = JSON.parse(event.data);
-  } catch (error) {
-    console.error(`invalid JSON from app-server: ${event.data}`);
-    return;
-  }
-
-  if (Object.prototype.hasOwnProperty.call(msg, "id") && pending.has(msg.id)) {
-    const { resolve, reject, method } = pending.get(msg.id);
-    pending.delete(msg.id);
-    if (msg.error) {
-      reject(new Error(`${method} failed: ${JSON.stringify(msg.error)}`));
-    } else {
-      resolve(msg.result);
-    }
-    return;
-  }
-
-  if (!msg.method) return;
-  const params = msg.params || {};
-  if (msg.method === "item/completed") {
-    const text = itemText(params.item);
-    if (text) process.stdout.write(`${text}\n`);
-  }
-  if (msg.method === "turn/completed" && params.turn?.id === targetTurnId) {
-    completed = true;
-    const status = params.turn?.status || "unknown";
-    console.error(`completed: ${status}`);
-    if (status === "failed" && params.turn?.error?.message) {
-      console.error(params.turn.error.message);
-      process.exitCode = 1;
-    }
-    ws.close();
-  }
-});
-
-ws.addEventListener("error", (event) => {
-  fail(event.error || "websocket error");
-});
-
-ws.addEventListener("close", () => {
-  if (!completed && targetTurnId) {
-    console.error("connection closed before turn/completed");
-    process.exit(1);
-  }
-});
-NODE
+    node "$RPC_SCRIPT" send
 }
 
 main() {

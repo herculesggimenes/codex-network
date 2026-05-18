@@ -40,6 +40,7 @@ The diagram source is editable HTML at [`docs/architecture.html`](docs/architect
 This installs:
 
 - `bin/codex-network` to `~/.local/bin/codex-network`
+- `lib/codex-network` to `~/.local/lib/codex-network`
 - the Codex skill to `~/.agents/skills/codex-network`
 
 To also copy the skill into another local skill directory, set:
@@ -76,6 +77,10 @@ Host codex-remote-b
 
 The older `# BEGIN Codex RDE aliases` block is still supported for existing setups.
 The `scripts/sync-rdes.sh` script remains as a compatibility wrapper.
+
+`codex-network` loads helper code from `../lib/codex-network` relative to the
+binary. Override that with `CODEX_NETWORK_LIB_DIR` if you use a custom install
+layout.
 
 ## Conversation Commands
 

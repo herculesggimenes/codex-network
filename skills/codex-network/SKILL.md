@@ -109,7 +109,7 @@ ssh <remote-host> 'curl -fsS "$(codex-network http url <name>)"'
 - `http expose --conversation-id` still needs `--port`; the conversation resolves the owning node, not the application port.
 - Creating/stopping mesh forwards currently runs from the parent machine because it owns the SSH aliases and tmux tunnel control.
 - If `codex-network list` cannot scan a remote host/RDE, restore the parent app-server SSH forward for that node before relying on conversation-id resolution.
-- Remote hosts/RDEs need `~/.local/bin/codex-network` and `~/.codex-network/nodes.tsv` synced before they can resolve all nodes.
+- Remote hosts/RDEs need `~/.local/bin/codex-network`, `~/.local/lib/codex-network`, and `~/.codex-network/nodes.tsv` synced before they can resolve all nodes.
 - Do not print Codex credentials, OAuth tokens, private app-server payloads, or raw internal tunnel details unless debugging requires a narrow excerpt.
 
 ## Stop Conditions

@@ -6,8 +6,7 @@ scripts.
 Before sending a change:
 
 ```bash
-bash -n bin/codex-network install.sh scripts/sync-remotes.sh scripts/sync-rdes.sh
-bin/codex-network --help >/dev/null
+scripts/check.sh
 ```
 
 Keep user-facing commands high level. Prefer conversation ids, node names,
