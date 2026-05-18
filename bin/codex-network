@@ -9,12 +9,16 @@ DEFAULT_LIST_LIMIT="${CODEX_NETWORK_LIST_LIMIT:-20}"
 DEFAULT_NODES_FILE="${CODEX_NETWORK_NODES_FILE:-$HOME/.codex-network/nodes.tsv}"
 DEFAULT_HTTP_FILE="${CODEX_NETWORK_HTTP_FILE:-$HOME/.codex-network/http.tsv}"
 DEFAULT_HTTP_BASE_PORT="${CODEX_NETWORK_HTTP_BASE_PORT:-49400}"
+DEFAULT_CONTROL_PORT="${CODEX_NETWORK_CONTROL_PORT:-49323}"
+DEFAULT_CONTROL_URL="${CODEX_NETWORK_CONTROL_URL:-http://127.0.0.1:${DEFAULT_CONTROL_PORT}}"
 DEFAULT_HOSTS_FILE="${CODEX_NETWORK_HOSTS_FILE:-$HOME/.codex-network/hosts}"
 DEFAULT_SSH_CONFIG="${CODEX_NETWORK_SSH_CONFIG:-$HOME/.ssh/config}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${CODEX_NETWORK_LIB_DIR:-$SCRIPT_DIR/../lib/codex-network}"
 RPC_SCRIPT="$LIB_DIR/rpc.mjs"
 HTTP_PROXY_SCRIPT="$LIB_DIR/http-proxy.mjs"
+CONTROL_SERVER_SCRIPT="$LIB_DIR/control-server.mjs"
+CONTROL_CLIENT_SCRIPT="$LIB_DIR/control-client.mjs"
 
 # shellcheck disable=SC1091
 if [[ -f "$LIB_DIR/hosts.bash" ]]; then
@@ -31,6 +35,9 @@ Usage:
   codex-network http expose --conversation-id <id> --port <port> [--name <name>] [--listen-port <port>]
   codex-network http url <name>
   codex-network http stop <name>
+  codex-network control serve
+  codex-network control status
+  codex-network control stop
   codex-network serve
   codex-network expose-parent --all-hosts
   codex-network status
@@ -62,6 +69,14 @@ require_http_proxy_script() {
   [[ -f "$HTTP_PROXY_SCRIPT" ]] || die "missing HTTP proxy helper: $HTTP_PROXY_SCRIPT"
 }
 
+require_control_server_script() {
+  [[ -f "$CONTROL_SERVER_SCRIPT" ]] || die "missing control server helper: $CONTROL_SERVER_SCRIPT"
+}
+
+require_control_client_script() {
+  [[ -f "$CONTROL_CLIENT_SCRIPT" ]] || die "missing control client helper: $CONTROL_CLIENT_SCRIPT"
+}
+
 validate_ssh_host_alias() {
   if declare -F validate_codex_network_host_alias >/dev/null; then
     validate_codex_network_host_alias "$1"
@@ -77,6 +92,14 @@ managed_hosts_checked() {
     validate_ssh_host_alias "$host" || die "unsafe SSH host alias: $host"
     printf '%s\n' "$host"
   done < <(managed_hosts)
+}
+
+have_managed_hosts() {
+  local host
+  while IFS= read -r host; do
+    [[ -n "$host" ]] && return 0
+  done < <(managed_hosts_checked)
+  return 1
 }
 
 http_url_for_ws() {
@@ -255,6 +278,177 @@ status() {
   fi
 }
 
+control_url_for_port() {
+  local port="$1"
+  printf 'http://127.0.0.1:%s\n' "$port"
+}
+
+control_status() {
+  local port="$DEFAULT_CONTROL_PORT"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --port)
+        [[ $# -ge 2 ]] || die "missing value for --port"
+        port="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown control status argument: $1"
+        ;;
+    esac
+  done
+
+  validate_port "control port" "$port"
+  local control_url
+  control_url="$(control_url_for_port "$port")"
+  if command -v curl >/dev/null 2>&1 && curl -fsS "$control_url/readyz" >/dev/null; then
+    echo "ready: $control_url"
+  else
+    die "not ready: $control_url"
+  fi
+}
+
+control_serve() {
+  local port="$DEFAULT_CONTROL_PORT"
+  local session="codex-network-control"
+  local tmux_socket="$DEFAULT_TMUX_SOCKET"
+  local foreground=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --port)
+        [[ $# -ge 2 ]] || die "missing value for --port"
+        port="$2"
+        shift 2
+        ;;
+      --session)
+        [[ $# -ge 2 ]] || die "missing value for --session"
+        session="$2"
+        shift 2
+        ;;
+      --tmux-socket)
+        [[ $# -ge 2 ]] || die "missing value for --tmux-socket"
+        tmux_socket="$2"
+        shift 2
+        ;;
+      --foreground)
+        foreground=true
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown control serve argument: $1"
+        ;;
+    esac
+  done
+
+  validate_port "control port" "$port"
+  require_command node
+  require_control_server_script
+
+  if [[ "$foreground" == true ]]; then
+    exec env \
+      "CODEX_NETWORK_BIN=$SCRIPT_DIR/codex-network" \
+      "CODEX_NETWORK_CONTROL_PORT=$port" \
+      node "$CONTROL_SERVER_SCRIPT"
+  fi
+
+  require_command tmux
+  [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $session"
+  [[ "$tmux_socket" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux socket name: $tmux_socket"
+
+  if tmux -L "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
+    echo "control server already running in tmux session: $session"
+    return
+  fi
+
+  local quoted_script quoted_bin
+  quoted_script="$(printf '%q' "$CONTROL_SERVER_SCRIPT")"
+  quoted_bin="$(printf '%q' "$SCRIPT_DIR/codex-network")"
+  tmux -L "$tmux_socket" new-session -d -s "$session" -n control -c "$HOME" \
+    "$SHELL" -lc "exec env CODEX_NETWORK_BIN=$quoted_bin CODEX_NETWORK_CONTROL_PORT=$(printf '%q' "$port") node $quoted_script"
+  echo "started control server in tmux session: $session"
+  echo "endpoint: $(control_url_for_port "$port")"
+}
+
+control_stop() {
+  local session="codex-network-control"
+  local tmux_socket="$DEFAULT_TMUX_SOCKET"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --session)
+        [[ $# -ge 2 ]] || die "missing value for --session"
+        session="$2"
+        shift 2
+        ;;
+      --tmux-socket)
+        [[ $# -ge 2 ]] || die "missing value for --tmux-socket"
+        tmux_socket="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown control stop argument: $1"
+        ;;
+    esac
+  done
+
+  require_command tmux
+  [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $session"
+  [[ "$tmux_socket" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux socket name: $tmux_socket"
+  if tmux -L "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
+    tmux -L "$tmux_socket" kill-session -t "$session"
+    echo "stopped control server tmux session: $session"
+  else
+    echo "control server tmux session not running: $session"
+  fi
+}
+
+control_command() {
+  local command="${1:-status}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+
+  case "$command" in
+    serve) control_serve "$@" ;;
+    status) control_status "$@" ;;
+    stop) control_stop "$@" ;;
+    -h|--help|"") usage ;;
+    *) die "unknown control command: $command" ;;
+  esac
+}
+
+ensure_control_ready() {
+  local port="$1"
+  local control_url
+  control_url="$(control_url_for_port "$port")"
+
+  if command -v curl >/dev/null 2>&1 && curl -fsS "$control_url/readyz" >/dev/null 2>&1; then
+    return
+  fi
+
+  control_serve --port "$port" >/dev/null
+  for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if command -v curl >/dev/null 2>&1 && curl -fsS "$control_url/readyz" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 0.5
+  done
+
+  die "control server did not become ready: $control_url"
+}
+
 stop() {
   local session="$DEFAULT_SESSION"
   local tmux_socket="$DEFAULT_TMUX_SOCKET"
@@ -294,8 +488,10 @@ stop() {
 expose_parent() {
   local parent_url="$DEFAULT_URL"
   local remote_port="${CODEX_NETWORK_PARENT_PORT:-49322}"
+  local control_port="$DEFAULT_CONTROL_PORT"
   local tmux_socket="$DEFAULT_TMUX_SOCKET"
   local all_hosts=false
+  local expose_control=true
   local hosts=()
 
   while [[ $# -gt 0 ]]; do
@@ -318,6 +514,15 @@ expose_parent() {
         [[ $# -ge 2 ]] || die "missing value for --remote-port"
         remote_port="$2"
         shift 2
+        ;;
+      --control-port)
+        [[ $# -ge 2 ]] || die "missing value for --control-port"
+        control_port="$2"
+        shift 2
+        ;;
+      --no-control)
+        expose_control=false
+        shift
         ;;
       --tmux-socket)
         [[ $# -ge 2 ]] || die "missing value for --tmux-socket"
@@ -343,10 +548,14 @@ expose_parent() {
 
   [[ ${#hosts[@]} -gt 0 ]] || die "provide --host, --all-hosts, or --all-rdes"
   [[ "$remote_port" =~ ^[0-9]+$ ]] || die "remote port must be numeric: $remote_port"
+  validate_port "control port" "$control_port"
   [[ "$tmux_socket" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux socket name: $tmux_socket"
 
   require_command tmux
   require_command ssh
+  if [[ "$expose_control" == true ]]; then
+    ensure_control_ready "$control_port"
+  fi
 
   local parent_host
   local parent_port
@@ -361,7 +570,9 @@ expose_parent() {
     fi
     seen+="$host "
 
-    local session="codex-network-parent-$host"
+    local session_host
+    session_host="$(sanitize_service_name "$host")"
+    local session="codex-network-parent-$session_host"
     [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $session"
 
     if tmux -L "$tmux_socket" has-session -t "$session" >/dev/null 2>&1; then
@@ -392,6 +603,43 @@ expose_parent() {
       echo "verified parent endpoint on $host: ws://127.0.0.1:${remote_port}"
     else
       echo "warning: parent endpoint not ready on $host: ws://127.0.0.1:${remote_port}" >&2
+    fi
+
+    if [[ "$expose_control" != true ]]; then
+      continue
+    fi
+
+    local control_session="codex-network-control-$session_host"
+    [[ "$control_session" =~ ^[A-Za-z0-9_.-]+$ ]] || die "unsafe tmux session name: $control_session"
+
+    if tmux -L "$tmux_socket" has-session -t "$control_session" >/dev/null 2>&1; then
+      echo "parent control tunnel already running for $host in tmux session: $control_session"
+    else
+      local control_ssh_args=(
+        ssh
+        -N
+        -o ExitOnForwardFailure=yes
+        -o ServerAliveInterval=30
+        -o ServerAliveCountMax=3
+        -R "127.0.0.1:${control_port}:127.0.0.1:${control_port}"
+        "$host"
+      )
+      local control_quoted=()
+      local control_arg
+      for control_arg in "${control_ssh_args[@]}"; do
+        control_quoted+=("$(printf '%q' "$control_arg")")
+      done
+
+      tmux -L "$tmux_socket" new-session -d -s "$control_session" -n parent-control -c "$HOME" \
+        "$SHELL" -lc "exec ${control_quoted[*]}"
+      echo "started parent control tunnel for $host in tmux session: $control_session"
+    fi
+
+    if ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" \
+      "curl -fsS http://127.0.0.1:${control_port}/readyz >/dev/null"; then
+      echo "verified parent control endpoint on $host: http://127.0.0.1:${control_port}"
+    else
+      echo "warning: parent control endpoint not ready on $host: http://127.0.0.1:${control_port}" >&2
     fi
   done
 }
@@ -437,6 +685,18 @@ node_exists() {
 }
 
 current_node_name() {
+  if [[ -n "${CODEX_NETWORK_NODE:-}" ]]; then
+    printf '%s\n' "$CODEX_NETWORK_NODE"
+    return
+  fi
+  if [[ -f "$HOME/.codex-network/node" ]]; then
+    local node_name
+    node_name="$(awk 'NF && $1 !~ /^#/ { print $1; exit }' "$HOME/.codex-network/node")"
+    if [[ -n "$node_name" ]]; then
+      printf '%s\n' "$node_name"
+      return
+    fi
+  fi
   if have_node_registry; then
     local node_name node_url
     while IFS=$'\t' read -r node_name node_url; do
@@ -667,7 +927,26 @@ http_url() {
   awk -F '\t' 'NF >= 5 { print $5; exit }' <<< "$row"
 }
 
-http_stop() {
+http_control_request() {
+  local action="$1"
+  shift
+  local default_node
+  default_node="$(current_node_name)"
+
+  require_command node
+  require_control_client_script
+  CODEX_NETWORK_CONTROL_URL="$DEFAULT_CONTROL_URL" \
+    CODEX_NETWORK_CONTROL_DEFAULT_NODE="$default_node" \
+    node "$CONTROL_CLIENT_SCRIPT" "$action" "$@"
+}
+
+should_delegate_http_control() {
+  [[ "${CODEX_NETWORK_CONTROL_DISABLE:-}" == "1" ]] && return 1
+  [[ "${CODEX_NETWORK_CONTROL_DISABLE:-}" == "true" ]] && return 1
+  ! have_managed_hosts
+}
+
+http_stop_parent() {
   local name="${1:-}"
   [[ -n "$name" ]] || die "HTTP forward name is required"
   validate_service_name "$name"
@@ -702,16 +981,30 @@ http_stop() {
   echo "removed HTTP forward: $name"
 }
 
-http_expose() {
+http_stop() {
+  if should_delegate_http_control; then
+    http_control_request http-stop "$@"
+    return
+  fi
+  http_stop_parent "$@"
+}
+
+http_expose_parent() {
   local target_spec=""
   local target_node=""
   local target_port=""
   local listen_port=""
   local name=""
   local conversation_id=""
+  local default_node=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --default-node)
+        [[ $# -ge 2 ]] || die "missing value for --default-node"
+        default_node="$2"
+        shift 2
+        ;;
       --conversation-id)
         [[ $# -ge 2 ]] || die "missing value for --conversation-id"
         conversation_id="$2"
@@ -773,7 +1066,7 @@ http_expose() {
   fi
 
   if [[ -z "$target_node" ]]; then
-    target_node="$(current_node_name)"
+    target_node="${default_node:-$(current_node_name)}"
   fi
 
   [[ -n "$target_port" ]] || die "target port is required"
@@ -855,6 +1148,14 @@ http_expose() {
   sync_http_registry_to_hosts "${hosts[@]}"
   echo "exposed HTTP forward: $name -> ${target_node}:${target_port}"
   echo "$url"
+}
+
+http_expose() {
+  if should_delegate_http_control; then
+    http_control_request http-expose "$@"
+    return
+  fi
+  http_expose_parent "$@"
 }
 
 http_command() {
@@ -1289,10 +1590,13 @@ main() {
     stop) stop "$@" ;;
     send) send_command "$@" ;;
     http) http_command "$@" ;;
+    control) control_command "$@" ;;
     send-parent) send_message --local --url "$DEFAULT_PARENT_URL" "$@" ;;
     expose-parent) expose_parent "$@" ;;
     __list-local) thread_list_local "$@" ;;
     __resolve-local) resolve_local "$@" ;;
+    __http-expose-parent) http_expose_parent "$@" ;;
+    __http-stop-parent) http_stop_parent "$@" ;;
     status) status "$@" ;;
     -h|--help|"") usage ;;
     *) die "unknown command: $command" ;;

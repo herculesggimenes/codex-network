@@ -28,6 +28,8 @@ HTTP forwarding uses native SSH tunnels:
   URL.
 - A tiny Node TCP proxy is used only when remapping a parent-local service from one localhost port
   to another.
+- A parent-local control server, also exposed over SSH `-R`, lets a remote host request forward
+  creation or teardown without owning the parent machine's SSH configuration.
 
 ## Architecture
 
@@ -57,7 +59,13 @@ To copy the helper and skill to all managed remote hosts:
 
 ```bash
 scripts/sync-remotes.sh
+codex-network expose-parent --all-hosts
 ```
+
+`expose-parent` makes the parent Codex app-server and the parent forwarding control endpoint
+reachable from each remote host on `127.0.0.1`. After that, a remote host can run
+`codex-network http expose ...` or `codex-network http stop ...`; those commands delegate the
+requested mesh change back to the parent automatically.
 
 Remote host discovery uses the first available source:
 
@@ -133,9 +141,15 @@ Stop a forward:
 codex-network http stop review-app
 ```
 
-Creating and stopping mesh HTTP forwards currently runs from the parent machine, because the parent
-owns the SSH aliases and tmux tunnel sessions. Listing and resolving named URLs works from each
-remote host after registry sync.
+Create and stop commands can be run from the parent or from a subscribed remote host. When a remote
+host has no local SSH host registry, it sends the request to the parent control endpoint exposed by
+`codex-network expose-parent --all-hosts`.
+
+Check the parent control endpoint:
+
+```bash
+codex-network control status
+```
 
 ## Required Local State
 
@@ -155,9 +169,14 @@ codex-remote-b
 
 `~/.codex-network/http.tsv` is managed by `codex-network http expose` and synced to remote hosts.
 
+`~/.codex-network/node` is written on remotes by `scripts/sync-remotes.sh` so a delegated
+`codex-network http expose 3000 --name app` defaults to that remote node.
+
 ## Safety
 
 - URLs are bound to `127.0.0.1`.
+- The forwarding control server binds to `127.0.0.1` and only accepts validated `http expose` and
+  `http stop` requests.
 - Forward names are restricted to safe characters.
 - Ports are validated before tunnel creation.
 - The helper does not print OAuth tokens or Codex credentials.
@@ -175,9 +194,10 @@ npm run check
 The gate uses purpose-built validators for each part of the project:
 
 - Bash CLI and install/sync scripts: `bash -n` and ShellCheck.
-- Node WebSocket and TCP proxy helpers: `node --check` and ESLint.
+- Node WebSocket, TCP proxy, and parent control helpers: `node --check` and ESLint.
 - Markdown, HTML, YAML, JSON, and ESM formatting: Prettier.
 - Markdown documentation: markdownlint.
 - GitHub Actions workflow: actionlint.
 - Dependency hygiene: `npm audit --audit-level=moderate`.
-- Runtime smoke: CLI help, HTTP registry listing, host discovery, and install layout.
+- Runtime smoke: CLI help, HTTP registry listing, host discovery, parent control, HTTP proxy, and
+  install layout.

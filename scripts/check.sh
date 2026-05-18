@@ -40,7 +40,7 @@ check_http_proxy() (
   server_pid=""
   proxy_pid=""
 
-  trap '[[ -n "$proxy_pid" ]] && kill "$proxy_pid" 2>/dev/null || true; [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null || true' EXIT
+  trap '[[ -n "$proxy_pid" ]] && kill "$proxy_pid" 2>/dev/null || true; [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null || true; [[ -n "$proxy_pid" ]] && wait "$proxy_pid" 2>/dev/null || true; [[ -n "$server_pid" ]] && wait "$server_pid" 2>/dev/null || true' EXIT
 
   PORT="$origin_port" node --input-type=module <<'NODE' &
 import http from "node:http";
@@ -72,6 +72,47 @@ NODE
   return 1
 )
 
+check_control_server() (
+  set -euo pipefail
+  local tmp_dir fake_bin control_port server_pid output
+  tmp_dir="$(mktemp -d)"
+  fake_bin="$tmp_dir/codex-network"
+  control_port="$(pick_available_port 49631)"
+  server_pid=""
+  trap '[[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null || true; [[ -n "$server_pid" ]] && wait "$server_pid" 2>/dev/null || true; rm -rf "$tmp_dir"' EXIT
+
+  cat > "$fake_bin" <<'FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'args:%s\n' "$*"
+FAKE
+  chmod +x "$fake_bin"
+  mkdir -p "$tmp_dir/home/.codex-network"
+  printf 'remote-a\n' > "$tmp_dir/home/.codex-network/node"
+
+  CODEX_NETWORK_BIN="$fake_bin" CODEX_NETWORK_CONTROL_PORT="$control_port" node lib/codex-network/control-server.mjs &
+  server_pid=$!
+  wait_for_local_port "$control_port"
+
+  output="$(
+    HOME="$tmp_dir/home" \
+      CODEX_NETWORK_HOSTS_FILE="$tmp_dir/missing-hosts" \
+      CODEX_NETWORK_SSH_CONFIG="$tmp_dir/missing-ssh-config" \
+      CODEX_NETWORK_CONTROL_URL="http://127.0.0.1:${control_port}" \
+      bin/codex-network http expose --port 3000 --name demo
+  )"
+  [[ "$output" == "args:__http-expose-parent --default-node remote-a --port 3000 --name demo" ]]
+
+  output="$(
+    HOME="$tmp_dir/home" \
+      CODEX_NETWORK_HOSTS_FILE="$tmp_dir/missing-hosts" \
+      CODEX_NETWORK_SSH_CONFIG="$tmp_dir/missing-ssh-config" \
+      CODEX_NETWORK_CONTROL_URL="http://127.0.0.1:${control_port}" \
+      bin/codex-network http stop demo
+  )"
+  [[ "$output" == "args:__http-stop-parent demo" ]]
+)
+
 echo "checking shell syntax"
 bash -n bin/codex-network install.sh scripts/sync-remotes.sh scripts/sync-rdes.sh lib/codex-network/hosts.bash
 echo "checking Node helper syntax"
@@ -88,6 +129,8 @@ echo "checking dependency audit"
 npm audit --audit-level=moderate
 echo "checking HTTP proxy helper"
 check_http_proxy
+echo "checking parent control helper"
+check_control_server
 echo "checking CLI smoke paths"
 bin/codex-network --help >/dev/null
 bin/codex-network http list >/dev/null
@@ -112,4 +155,6 @@ HOME="$tmp_home" ./install.sh >/dev/null
 HOME="$tmp_home" "$tmp_home/.local/bin/codex-network" --help >/dev/null
 test -f "$tmp_home/.local/lib/codex-network/rpc.mjs"
 test -f "$tmp_home/.local/lib/codex-network/http-proxy.mjs"
+test -f "$tmp_home/.local/lib/codex-network/control-client.mjs"
+test -f "$tmp_home/.local/lib/codex-network/control-server.mjs"
 test -f "$tmp_home/.agents/skills/codex-network/SKILL.md"

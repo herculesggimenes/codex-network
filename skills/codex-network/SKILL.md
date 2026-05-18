@@ -41,8 +41,9 @@ Infrastructure Operations
 3. If the task is about conversations or work handoff, use the conversation commands.
 4. If the task is about a running localhost service, URL, browser preview, dev server, webhook
    receiver, or any port, use the HTTP forward commands.
-5. If a command must create or stop a mesh HTTP forward, run it from the parent machine for now.
-   Remote hosts can list forwards, resolve names, and use the returned localhost URLs.
+5. Create or stop mesh HTTP forwards from whichever node you are on. Remote/RDE nodes delegate the
+   request to the parent control endpoint when `codex-network expose-parent --all-hosts` has been
+   run on the parent.
 
 ## Availability Check
 
@@ -101,6 +102,17 @@ codex-network http list
 codex-network http stop <name>
 ```
 
+Set up remote/RDE control of parent-owned forwards:
+
+```bash
+codex-network expose-parent --all-hosts
+codex-network control status
+```
+
+After this setup, a remote/RDE can run the same `codex-network http expose ...` and
+`codex-network http stop ...` commands. If no target node is supplied, a synced remote defaults to
+its `~/.codex-network/node` identity.
+
 After creating a forward, verify the returned URL from the parent and at least one relevant remote
 host:
 
@@ -128,6 +140,8 @@ ssh <remote-host> 'curl -fsS "$(codex-network http url <name>)"'
 - Conversation messaging uses Codex app-server v2 JSON-RPC over the built-in WebSocket transport.
 - HTTP forwarding uses native SSH `-L` and `-R` tunnels managed by tmux.
 - Parent-local port remapping uses a tiny Node TCP proxy.
+- Remote/RDE port-forward control uses a parent-local HTTP control server exposed to each remote
+  over SSH `-R`; the server only accepts validated `http expose` and `http stop` requests.
 - Node registry: `~/.codex-network/nodes.tsv`
 - HTTP registry: `~/.codex-network/http.tsv`
 
@@ -135,12 +149,13 @@ ssh <remote-host> 'curl -fsS "$(codex-network http url <name>)"'
 
 - `http expose --conversation-id` still needs `--port`; the conversation resolves the owning node,
   not the application port.
-- Creating/stopping mesh forwards currently runs from the parent machine because it owns the SSH
-  aliases and tmux tunnel control.
+- Remote/RDE create/stop requests require the parent control tunnel from
+  `codex-network expose-parent --all-hosts`.
 - If `codex-network list` cannot scan a remote host/RDE, restore the parent app-server SSH forward
   for that node before relying on conversation-id resolution.
 - Remote hosts/RDEs need `~/.local/bin/codex-network`, `~/.local/lib/codex-network`, and
-  `~/.codex-network/nodes.tsv` synced before they can resolve all nodes.
+  `~/.codex-network/nodes.tsv` synced before they can resolve all nodes. `scripts/sync-remotes.sh`
+  also writes `~/.codex-network/node` so default remote port exposes resolve to the remote node.
 - Do not print Codex credentials, OAuth tokens, private app-server payloads, or raw internal tunnel
   details unless debugging requires a narrow excerpt.
 

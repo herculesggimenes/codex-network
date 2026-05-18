@@ -25,12 +25,13 @@ for host in "${hosts[@]}"; do
   }
 
   echo "syncing $host"
-  ssh -o BatchMode=yes -o ConnectTimeout=20 "$host" 'mkdir -p ~/.local/bin ~/.local/lib ~/.agents/skills && rm -rf ~/.agents/skills/codex-network ~/.local/lib/codex-network'
+  ssh -o BatchMode=yes -o ConnectTimeout=20 "$host" 'mkdir -p ~/.local/bin ~/.local/lib ~/.agents/skills ~/.codex-network && rm -rf ~/.agents/skills/codex-network ~/.local/lib/codex-network'
   scp -q "$repo_dir/bin/codex-network" "$host:~/.local/bin/codex-network"
   scp -q -r "$repo_dir/lib/codex-network" "$host:~/.local/lib/codex-network"
   scp -q -r "$repo_dir/skills/codex-network" "$host:~/.agents/skills/codex-network"
+  printf '%s\n' "$host" | ssh -o BatchMode=yes -o ConnectTimeout=20 "$host" 'cat > ~/.codex-network/node'
   ssh -o BatchMode=yes -o ConnectTimeout=20 "$host" \
-    'chmod +x ~/.local/bin/codex-network && bash -n ~/.local/bin/codex-network && test -f ~/.local/lib/codex-network/rpc.mjs && test -f ~/.agents/skills/codex-network/SKILL.md'
+    'chmod +x ~/.local/bin/codex-network && bash -n ~/.local/bin/codex-network && test -f ~/.local/lib/codex-network/rpc.mjs && test -f ~/.local/lib/codex-network/control-server.mjs && test -f ~/.agents/skills/codex-network/SKILL.md'
 done
 
 echo "synced codex-network helper and skill to ${#hosts[@]} remote host(s)"
