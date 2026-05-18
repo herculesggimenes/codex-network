@@ -25,6 +25,12 @@ HTTP forwarding uses native SSH tunnels:
 - `ssh -R` from the parent into each subscribed remote host, so every node gets the same localhost URL.
 - A tiny Node TCP proxy is used only when remapping a parent-local service from one localhost port to another.
 
+## Architecture
+
+![codex-network architecture](docs/architecture.png)
+
+The diagram source is editable HTML at [`docs/architecture.html`](docs/architecture.html).
+
 ## Install
 
 ```bash
