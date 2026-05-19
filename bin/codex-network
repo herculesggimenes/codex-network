@@ -33,11 +33,9 @@ Usage:
   codex-network http list
   codex-network http expose <node>:<port> [--name <name>] [--listen-port <port>]
   codex-network http expose --conversation-id <id> --port <port> [--name <name>] [--listen-port <port>]
-  codex-network http open <name>
   codex-network http url <name>
   codex-network http stop <name>
-  codex-network browser open <url>
-  codex-network open <url>
+  codex-network open <url-or-forward-name>
   codex-network control serve
   codex-network control status
   codex-network control stop
@@ -1161,6 +1159,18 @@ http_open() {
   browser_open "$url"
 }
 
+open_target() {
+  local target="${1:-}"
+  [[ -n "$target" ]] || die "open target is required"
+  [[ $# -le 1 ]] || die "open accepts exactly one URL or forward name"
+
+  case "$target" in
+    http://*|https://*) browser_open "$target" ;;
+    *://*) die "browser URL must start with http:// or https://" ;;
+    *) http_open "$target" ;;
+  esac
+}
+
 http_stop_parent() {
   local name="${1:-}"
   [[ -n "$name" ]] || die "HTTP forward name is required"
@@ -1941,7 +1951,7 @@ main() {
     send) send_command "$@" ;;
     http) http_command "$@" ;;
     browser) browser_command "$@" ;;
-    open) browser_open "$@" ;;
+    open) open_target "$@" ;;
     control) control_command "$@" ;;
     doctor) doctor_command "$@" ;;
     send-parent) send_message --local --url "$DEFAULT_PARENT_URL" "$@" ;;

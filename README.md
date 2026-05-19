@@ -137,10 +137,12 @@ Resolve a forward URL from any subscribed environment:
 codex-network http url review-app
 ```
 
-Open a named forward in the parent browser:
+Open a named forward or URL in the parent browser from any subscribed environment:
 
 ```bash
-codex-network http open review-app
+codex-network open review-app
+codex-network open "https://example.com/oauth/authorize?..."
+codex-network open "http://127.0.0.1:3000"
 ```
 
 Stop a forward:
@@ -159,19 +161,12 @@ Check the parent control endpoint:
 codex-network control status
 ```
 
-Open an HTTP or HTTPS URL in the parent browser from any subscribed environment:
-
-```bash
-codex-network browser open "https://example.com/oauth/authorize?..."
-codex-network open "http://127.0.0.1:3000"
-```
-
 For OAuth from an RDE, expose the RDE callback port first, keeping the browser-visible localhost
 port the same as the redirect URI when the provider requires it, then open the authorization URL:
 
 ```bash
 codex-network http expose --port 39123 --listen-port 39123 --name oauth-callback
-codex-network browser open "<authorization-url>"
+codex-network open "<authorization-url>"
 ```
 
 Validate conversation-id routing across nodes and workspaces:

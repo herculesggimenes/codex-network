@@ -117,7 +117,7 @@ FAKE
       CODEX_NETWORK_HOSTS_FILE="$tmp_dir/missing-hosts" \
       CODEX_NETWORK_SSH_CONFIG="$tmp_dir/missing-ssh-config" \
       CODEX_NETWORK_CONTROL_URL="http://127.0.0.1:${control_port}" \
-      bin/codex-network browser open "https://example.com/oauth?state=demo"
+      bin/codex-network open "https://example.com/oauth?state=demo"
   )"
   [[ "$output" == "args:__browser-open-parent https://example.com/oauth?state=demo" ]]
 )
@@ -139,7 +139,7 @@ FAKE
     CODEX_NETWORK_BROWSER_OPEN_CMD="$fake_open" \
       FAKE_BROWSER_LOG="$tmp_dir/browser.log" \
       CODEX_NETWORK_CONTROL_DISABLE=1 \
-      bin/codex-network browser open "http://127.0.0.1:3000/path"
+      bin/codex-network open "http://127.0.0.1:3000/path"
   )"
   [[ "$output" == "opened browser URL: http://127.0.0.1:3000/path" ]]
   grep -qx 'http://127.0.0.1:3000/path' "$tmp_dir/browser.log"
@@ -151,12 +151,12 @@ FAKE
       CODEX_NETWORK_BROWSER_OPEN_CMD="$fake_open" \
       FAKE_BROWSER_LOG="$tmp_dir/browser.log" \
       CODEX_NETWORK_CONTROL_DISABLE=1 \
-      bin/codex-network http open demo
+      bin/codex-network open demo
   )"
   [[ "$output" == "opened browser URL: http://127.0.0.1:3000" ]]
   grep -qx 'http://127.0.0.1:3000' "$tmp_dir/browser.log"
 
-  if CODEX_NETWORK_BROWSER_OPEN_CMD="$fake_open" FAKE_BROWSER_LOG="$tmp_dir/browser.log" bin/codex-network browser open "file:///tmp/nope" >/dev/null 2>&1; then
+  if CODEX_NETWORK_BROWSER_OPEN_CMD="$fake_open" FAKE_BROWSER_LOG="$tmp_dir/browser.log" bin/codex-network open "file:///tmp/nope" >/dev/null 2>&1; then
     return 1
   fi
 )

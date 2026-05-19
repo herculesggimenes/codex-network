@@ -115,11 +115,10 @@ codex-network http expose --conversation-id <conversation-id> --port <port> --na
 codex-network http url <name>
 ```
 
-List, open, or stop active forwards:
+List or stop active forwards:
 
 ```bash
 codex-network http list
-codex-network http open <name>
 codex-network http stop <name>
 ```
 
@@ -134,10 +133,10 @@ After this setup, a remote/RDE can run the same `codex-network http expose ...` 
 `codex-network http stop ...` commands. If no target node is supplied, a synced remote defaults to
 its `~/.codex-network/node` identity.
 
-Open a URL in the parent browser from any subscribed node:
+Open a named forward or URL in the parent browser from any subscribed node:
 
 ```bash
-codex-network browser open "<http-or-https-url>"
+codex-network open <forward-name>
 codex-network open "<http-or-https-url>"
 ```
 
@@ -145,7 +144,7 @@ For OAuth from an RDE:
 
 ```bash
 codex-network http expose --port <callback-port> --listen-port <callback-port> --name oauth-callback
-codex-network browser open "<authorization-url>"
+codex-network open "<authorization-url>"
 ```
 
 After creating a forward, verify the returned URL from the parent and at least one relevant remote
