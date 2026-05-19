@@ -137,13 +137,14 @@ Resolve a forward URL from any subscribed environment:
 codex-network http url review-app
 ```
 
-Open a named forward or URL in the parent browser from any subscribed environment:
+Open an explicit URL in the parent browser from any subscribed environment:
 
 ```bash
-codex-network open review-app
 codex-network open "https://example.com/oauth/authorize?..."
 codex-network open "http://127.0.0.1:3000"
 ```
+
+`open` takes the URL literally. It does not resolve HTTP forward names.
 
 Stop a forward:
 

@@ -144,17 +144,9 @@ FAKE
   [[ "$output" == "opened URL: http://127.0.0.1:3000/path" ]]
   grep -qx 'http://127.0.0.1:3000/path' "$tmp_dir/browser.log"
 
-  mkdir -p "$tmp_dir/home/.codex-network"
-  printf 'demo\tlocal\t3000\t3000\thttp://127.0.0.1:3000\n' > "$tmp_dir/home/.codex-network/http.tsv"
-  output="$(
-    HOME="$tmp_dir/home" \
-      CODEX_NETWORK_BROWSER_OPEN_CMD="$fake_open" \
-      FAKE_BROWSER_LOG="$tmp_dir/browser.log" \
-      CODEX_NETWORK_CONTROL_DISABLE=1 \
-      bin/codex-network open demo
-  )"
-  [[ "$output" == "opened URL: http://127.0.0.1:3000" ]]
-  grep -qx 'http://127.0.0.1:3000' "$tmp_dir/browser.log"
+  if CODEX_NETWORK_BROWSER_OPEN_CMD="$fake_open" FAKE_BROWSER_LOG="$tmp_dir/browser.log" bin/codex-network open demo >/dev/null 2>&1; then
+    return 1
+  fi
 
   if CODEX_NETWORK_BROWSER_OPEN_CMD="$fake_open" FAKE_BROWSER_LOG="$tmp_dir/browser.log" bin/codex-network open "file:///tmp/nope" >/dev/null 2>&1; then
     return 1

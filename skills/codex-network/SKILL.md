@@ -133,12 +133,13 @@ After this setup, a remote/RDE can run the same `codex-network http expose ...` 
 `codex-network http stop ...` commands. If no target node is supplied, a synced remote defaults to
 its `~/.codex-network/node` identity.
 
-Open a named forward or URL in the parent browser from any subscribed node:
+Open an explicit URL in the parent browser from any subscribed node:
 
 ```bash
-codex-network open <forward-name>
 codex-network open "<http-or-https-url>"
 ```
+
+`open` takes the URL literally. It does not resolve HTTP forward names.
 
 For OAuth from an RDE:
 

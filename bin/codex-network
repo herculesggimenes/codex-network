@@ -35,7 +35,7 @@ Usage:
   codex-network http expose --conversation-id <id> --port <port> [--name <name>] [--listen-port <port>]
   codex-network http url <name>
   codex-network http stop <name>
-  codex-network open <url-or-forward-name>
+  codex-network open <http-or-https-url>
   codex-network control serve
   codex-network control status
   codex-network control stop
@@ -1137,27 +1137,6 @@ open_url() {
   open_url_parent "$url"
 }
 
-open_forward() {
-  local name="${1:-}"
-  [[ -n "$name" ]] || die "HTTP forward name is required"
-  [[ $# -le 1 ]] || die "open accepts exactly one URL or forward name"
-  local url
-  url="$(http_url "$name")"
-  open_url "$url"
-}
-
-open_target() {
-  local target="${1:-}"
-  [[ -n "$target" ]] || die "open target is required"
-  [[ $# -le 1 ]] || die "open accepts exactly one URL or forward name"
-
-  case "$target" in
-    http://*|https://*) open_url "$target" ;;
-    *://*) die "URL must start with http:// or https://" ;;
-    *) open_forward "$target" ;;
-  esac
-}
-
 http_stop_parent() {
   local name="${1:-}"
   [[ -n "$name" ]] || die "HTTP forward name is required"
@@ -1936,7 +1915,7 @@ main() {
     stop) stop "$@" ;;
     send) send_command "$@" ;;
     http) http_command "$@" ;;
-    open) open_target "$@" ;;
+    open) open_url "$@" ;;
     control) control_command "$@" ;;
     doctor) doctor_command "$@" ;;
     send-parent) send_message --local --url "$DEFAULT_PARENT_URL" "$@" ;;
