@@ -36,6 +36,7 @@ Usage:
   codex-network http url <name>
   codex-network http stop <name>
   codex-network open <http-or-https-url>
+  codex-network host bash '<command>'
   codex-network control serve
   codex-network control status
   codex-network control stop
@@ -52,6 +53,7 @@ nodes before the helper sends to the owner.
 
 HTTP forwards are named localhost URLs exposed on every subscribed node.
 Browser opens from remote nodes delegate to the parent control endpoint.
+Host bash commands from remote nodes delegate to the parent control endpoint.
 EOF
 }
 
@@ -1124,6 +1126,57 @@ should_delegate_parent_control() {
   ! have_managed_hosts
 }
 
+host_bash_script() {
+  if [[ $# -gt 0 && "${1:-}" == "--" ]]; then
+    shift
+  fi
+
+  if [[ $# -gt 0 ]]; then
+    printf '%s' "$*"
+    return
+  fi
+
+  if [[ -t 0 ]]; then
+    die "bash command is required"
+  fi
+
+  cat
+}
+
+host_bash_parent() {
+  local script
+  script="$(host_bash_script "$@")"
+  [[ -n "$script" ]] || die "bash command is required"
+  require_command bash
+  PATH="$HOME/.local/bin:$PATH" bash -c "$script"
+}
+
+host_bash() {
+  local script
+  script="$(host_bash_script "$@")"
+  [[ -n "$script" ]] || die "bash command is required"
+
+  if should_delegate_parent_control; then
+    parent_control_request host-bash "$script"
+    return
+  fi
+
+  host_bash_parent "$script"
+}
+
+host_command() {
+  local command="${1:-}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+
+  case "$command" in
+    bash) host_bash "$@" ;;
+    -h|--help|"") usage ;;
+    *) die "unknown host command: $command" ;;
+  esac
+}
+
 open_url() {
   local url="${1:-}"
   [[ $# -le 1 ]] || die "open accepts exactly one URL"
@@ -1916,6 +1969,7 @@ main() {
     send) send_command "$@" ;;
     http) http_command "$@" ;;
     open) open_url "$@" ;;
+    host) host_command "$@" ;;
     control) control_command "$@" ;;
     doctor) doctor_command "$@" ;;
     send-parent) send_message --local --url "$DEFAULT_PARENT_URL" "$@" ;;
@@ -1923,6 +1977,7 @@ main() {
     __list-local) thread_list_local "$@" ;;
     __resolve-local) resolve_local "$@" ;;
     __open-url-parent) open_url_parent "$@" ;;
+    __host-bash-parent) host_bash_parent "$@" ;;
     __http-expose-parent) http_expose_parent "$@" ;;
     __http-stop-parent) http_stop_parent "$@" ;;
     status) status "$@" ;;

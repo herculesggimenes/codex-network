@@ -5,9 +5,9 @@ description:
   across the parent machine and subscribed remote hosts/RDEs, continue or steer another conversation
   by conversation id, validate conversation ids across workspaces, expose/share/forward a localhost
   HTTP port, open a parent-machine browser from a remote/RDE session, handle OAuth links or
-  localhost callbacks across environments, start a dev server that must be reachable from another
-  environment, verify a URL from a remote host, or hand off work between local and remote sessions
-  without exposing raw SSH, tmux, or app-server details."
+  localhost callbacks across environments, run a parent-host bash command from an RDE, start a dev
+  server that must be reachable from another environment, verify a URL from a remote host, or hand
+  off work between local and remote sessions without exposing raw SSH, tmux, or app-server details."
 ---
 
 # Codex Network
@@ -30,6 +30,8 @@ Infrastructure Operations
   open a local service from another node, or make one environment reach another environment's port
 - the user asks to open a browser from an RDE, open a local URL on the parent machine, complete an
   OAuth browser flow from a remote environment, or open a forwarded localhost URL
+- the user asks to run a bash command, fix a local command, inspect local host state, restart a
+  local process, or repair `codex-network` on the parent machine from an RDE
 - a task starts a localhost server, dev server, preview server, app server, HTTP API, webhook
   receiver, Storybook, Vite app, Next app, Rails app, dashboard, or other port that may need to be
   opened from another environment
@@ -54,6 +56,8 @@ Infrastructure Operations
    run on the parent.
 6. If an RDE needs a human/browser action, use `codex-network open` so the parent machine opens the
    URL. For OAuth, expose the callback port first when the redirect URI points at localhost.
+7. If an RDE needs to fix or inspect the parent host, use `codex-network host bash "<command>"`.
+   Keep commands short and explicit because they run as the parent user.
 
 ## Availability Check
 
@@ -141,6 +145,16 @@ codex-network open "<http-or-https-url>"
 
 `open` takes the URL literally. It does not resolve HTTP forward names.
 
+Run a bash command on the parent host from any subscribed node:
+
+```bash
+codex-network host bash "command -v codex-network"
+codex-network host bash "codex-network control status"
+```
+
+`host bash` runs the command with `bash -c` on the parent host. Use it for short repair or
+inspection commands that you would be comfortable running directly on the parent machine.
+
 For OAuth from an RDE:
 
 ```bash
@@ -176,7 +190,8 @@ ssh <remote-host> 'curl -fsS "$(codex-network http url <name>)"'
 - HTTP forwarding uses native SSH `-L` and `-R` tunnels managed by tmux.
 - Parent-local port remapping uses a tiny Node TCP proxy.
 - Remote/RDE port-forward control uses a parent-local HTTP control server exposed to each remote
-  over SSH `-R`; the server only accepts validated `http expose`, `http stop`, and `open` requests.
+  over SSH `-R`; the server only accepts validated `http expose`, `http stop`, `open`, and
+  `host bash` requests.
 - Node registry: `~/.codex-network/nodes.tsv`
 - HTTP registry: `~/.codex-network/http.tsv`
 
@@ -188,8 +203,11 @@ ssh <remote-host> 'curl -fsS "$(codex-network http url <name>)"'
   `codex-network expose-parent --all-hosts`.
 - Remote/RDE `open` requests also require the parent control tunnel from
   `codex-network expose-parent --all-hosts`.
+- Remote/RDE `host bash` requests also require the parent control tunnel from
+  `codex-network expose-parent --all-hosts`.
 - `open` only accepts `http://` and `https://` URLs. Do not pass `file://` URLs or shell command
   strings.
+- `host bash` runs as the parent user and can modify files/processes on the parent machine.
 - If `codex-network list` cannot scan a remote host/RDE, restore the parent app-server SSH forward
   for that node before relying on conversation-id resolution.
 - Remote hosts/RDEs need `~/.local/bin/codex-network`, `~/.local/lib/codex-network`, and

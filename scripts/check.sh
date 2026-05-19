@@ -120,6 +120,15 @@ FAKE
       bin/codex-network open "https://example.com/oauth?state=demo"
   )"
   [[ "$output" == "args:__open-url-parent https://example.com/oauth?state=demo" ]]
+
+  output="$(
+    HOME="$tmp_dir/home" \
+      CODEX_NETWORK_HOSTS_FILE="$tmp_dir/missing-hosts" \
+      CODEX_NETWORK_SSH_CONFIG="$tmp_dir/missing-ssh-config" \
+      CODEX_NETWORK_CONTROL_URL="http://127.0.0.1:${control_port}" \
+      bin/codex-network host bash "printf host-ok"
+  )"
+  [[ "$output" == "args:__host-bash-parent printf host-ok" ]]
 )
 
 check_open_url() (
@@ -151,6 +160,17 @@ FAKE
   if CODEX_NETWORK_BROWSER_OPEN_CMD="$fake_open" FAKE_BROWSER_LOG="$tmp_dir/browser.log" bin/codex-network open "file:///tmp/nope" >/dev/null 2>&1; then
     return 1
   fi
+)
+
+check_host_bash() (
+  set -euo pipefail
+  local output
+
+  output="$(CODEX_NETWORK_CONTROL_DISABLE=1 bin/codex-network host bash "printf host-ok")"
+  [[ "$output" == "host-ok" ]]
+
+  output="$(printf 'printf stdin-ok' | CODEX_NETWORK_CONTROL_DISABLE=1 bin/codex-network host bash)"
+  [[ "$output" == "stdin-ok" ]]
 )
 
 check_conversation_doctor() (
@@ -288,6 +308,8 @@ echo "checking parent control helper"
 check_control_server
 echo "checking open helper"
 check_open_url
+echo "checking host bash helper"
+check_host_bash
 echo "checking conversation id doctor"
 check_conversation_doctor
 echo "checking stale app-server session restart"

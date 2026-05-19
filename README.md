@@ -7,7 +7,7 @@ Node.js 24 or newer for the native WebSocket runtime. The Codex app-server metho
 experimental, so pinning or checking against your Codex CLI version is sensible before depending on
 this in automation.
 
-It does three things:
+It does four things:
 
 1. Lists and sends messages to Codex conversations across the local machine and subscribed remote
    environments by conversation id.
@@ -15,9 +15,12 @@ It does three things:
    machine and every subscribed remote environment.
 3. Opens parent-machine browser URLs from a subscribed remote environment, which is useful for OAuth
    authorization links and forwarded localhost previews.
+4. Runs explicit bash commands on the parent host from a subscribed remote environment for small
+   repair or inspection tasks.
 
 The helper intentionally hides low-level SSH tunnel and app-server endpoint details from the normal
-CLI. In day-to-day use, pass conversation ids, node names, ports, and forward names.
+CLI. In day-to-day use, pass conversation ids, node names, ports, explicit URLs, and short host
+commands.
 
 ## Under The Hood
 
@@ -146,6 +149,16 @@ codex-network open "http://127.0.0.1:3000"
 
 `open` takes the URL literally. It does not resolve HTTP forward names.
 
+Run a bash command on the parent host from any subscribed environment:
+
+```bash
+codex-network host bash "command -v codex-network"
+codex-network host bash "codex-network control status"
+```
+
+`host bash` runs the command with `bash -c` on the parent host. Use it for short repair or
+inspection commands that you would be comfortable running directly on the parent machine.
+
 Stop a forward:
 
 ```bash
@@ -206,8 +219,10 @@ default port exposes still resolve to the current remote node.
 
 - URLs are bound to `127.0.0.1`.
 - The forwarding control server binds to `127.0.0.1` and only accepts validated `http expose`,
-  `http stop`, and `open` requests.
+  `http stop`, `open`, and `host bash` requests.
 - `open` requests only accept `http://` and `https://` URLs.
+- `host bash` runs as the parent user and has the same filesystem and process access as a local
+  parent terminal.
 - Forward names are restricted to safe characters.
 - Ports are validated before tunnel creation.
 - The helper does not print OAuth tokens or Codex credentials.
