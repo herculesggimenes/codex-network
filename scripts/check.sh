@@ -111,6 +111,54 @@ FAKE
       bin/codex-network http stop demo
   )"
   [[ "$output" == "args:__http-stop-parent demo" ]]
+
+  output="$(
+    HOME="$tmp_dir/home" \
+      CODEX_NETWORK_HOSTS_FILE="$tmp_dir/missing-hosts" \
+      CODEX_NETWORK_SSH_CONFIG="$tmp_dir/missing-ssh-config" \
+      CODEX_NETWORK_CONTROL_URL="http://127.0.0.1:${control_port}" \
+      bin/codex-network browser open "https://example.com/oauth?state=demo"
+  )"
+  [[ "$output" == "args:__browser-open-parent https://example.com/oauth?state=demo" ]]
+)
+
+check_browser_open() (
+  set -euo pipefail
+  local tmp_dir fake_open output
+  tmp_dir="$(mktemp -d)"
+  fake_open="$tmp_dir/open-browser"
+  trap 'rm -rf "$tmp_dir"' EXIT
+
+  cat > "$fake_open" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "${FAKE_BROWSER_LOG:?}"
+FAKE
+  chmod +x "$fake_open"
+
+  output="$(
+    CODEX_NETWORK_BROWSER_OPEN_CMD="$fake_open" \
+      FAKE_BROWSER_LOG="$tmp_dir/browser.log" \
+      CODEX_NETWORK_CONTROL_DISABLE=1 \
+      bin/codex-network browser open "http://127.0.0.1:3000/path"
+  )"
+  [[ "$output" == "opened browser URL: http://127.0.0.1:3000/path" ]]
+  grep -qx 'http://127.0.0.1:3000/path' "$tmp_dir/browser.log"
+
+  mkdir -p "$tmp_dir/home/.codex-network"
+  printf 'demo\tlocal\t3000\t3000\thttp://127.0.0.1:3000\n' > "$tmp_dir/home/.codex-network/http.tsv"
+  output="$(
+    HOME="$tmp_dir/home" \
+      CODEX_NETWORK_BROWSER_OPEN_CMD="$fake_open" \
+      FAKE_BROWSER_LOG="$tmp_dir/browser.log" \
+      CODEX_NETWORK_CONTROL_DISABLE=1 \
+      bin/codex-network http open demo
+  )"
+  [[ "$output" == "opened browser URL: http://127.0.0.1:3000" ]]
+  grep -qx 'http://127.0.0.1:3000' "$tmp_dir/browser.log"
+
+  if CODEX_NETWORK_BROWSER_OPEN_CMD="$fake_open" FAKE_BROWSER_LOG="$tmp_dir/browser.log" bin/codex-network browser open "file:///tmp/nope" >/dev/null 2>&1; then
+    return 1
+  fi
 )
 
 check_conversation_doctor() (
@@ -246,6 +294,8 @@ echo "checking HTTP proxy helper"
 check_http_proxy
 echo "checking parent control helper"
 check_control_server
+echo "checking browser open helper"
+check_browser_open
 echo "checking conversation id doctor"
 check_conversation_doctor
 echo "checking stale app-server session restart"

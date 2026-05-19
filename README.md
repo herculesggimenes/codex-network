@@ -7,12 +7,14 @@ Node.js 24 or newer for the native WebSocket runtime. The Codex app-server metho
 experimental, so pinning or checking against your Codex CLI version is sensible before depending on
 this in automation.
 
-It does two things:
+It does three things:
 
 1. Lists and sends messages to Codex conversations across the local machine and subscribed remote
    environments by conversation id.
 2. Exposes named HTTP forwards so the same `http://127.0.0.1:<port>` URL works from the parent
    machine and every subscribed remote environment.
+3. Opens parent-machine browser URLs from a subscribed remote environment, which is useful for OAuth
+   authorization links and forwarded localhost previews.
 
 The helper intentionally hides low-level SSH tunnel and app-server endpoint details from the normal
 CLI. In day-to-day use, pass conversation ids, node names, ports, and forward names.
@@ -29,7 +31,7 @@ HTTP forwarding uses native SSH tunnels:
 - A tiny Node TCP proxy is used only when remapping a parent-local service from one localhost port
   to another.
 - A parent-local control server, also exposed over SSH `-R`, lets a remote host request forward
-  creation or teardown without owning the parent machine's SSH configuration.
+  creation, teardown, or browser opens without owning the parent machine's SSH configuration.
 
 ## Architecture
 
@@ -135,6 +137,12 @@ Resolve a forward URL from any subscribed environment:
 codex-network http url review-app
 ```
 
+Open a named forward in the parent browser:
+
+```bash
+codex-network http open review-app
+```
+
 Stop a forward:
 
 ```bash
@@ -149,6 +157,21 @@ Check the parent control endpoint:
 
 ```bash
 codex-network control status
+```
+
+Open an HTTP or HTTPS URL in the parent browser from any subscribed environment:
+
+```bash
+codex-network browser open "https://example.com/oauth/authorize?..."
+codex-network open "http://127.0.0.1:3000"
+```
+
+For OAuth from an RDE, expose the RDE callback port first, keeping the browser-visible localhost
+port the same as the redirect URI when the provider requires it, then open the authorization URL:
+
+```bash
+codex-network http expose --port 39123 --listen-port 39123 --name oauth-callback
+codex-network browser open "<authorization-url>"
 ```
 
 Validate conversation-id routing across nodes and workspaces:
@@ -186,8 +209,9 @@ default port exposes still resolve to the current remote node.
 ## Safety
 
 - URLs are bound to `127.0.0.1`.
-- The forwarding control server binds to `127.0.0.1` and only accepts validated `http expose` and
-  `http stop` requests.
+- The forwarding control server binds to `127.0.0.1` and only accepts validated `http expose`,
+  `http stop`, and browser-open requests.
+- Browser-open requests only accept `http://` and `https://` URLs.
 - Forward names are restricted to safe characters.
 - Ports are validated before tunnel creation.
 - The helper does not print OAuth tokens or Codex credentials.

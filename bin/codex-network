@@ -33,8 +33,11 @@ Usage:
   codex-network http list
   codex-network http expose <node>:<port> [--name <name>] [--listen-port <port>]
   codex-network http expose --conversation-id <id> --port <port> [--name <name>] [--listen-port <port>]
+  codex-network http open <name>
   codex-network http url <name>
   codex-network http stop <name>
+  codex-network browser open <url>
+  codex-network open <url>
   codex-network control serve
   codex-network control status
   codex-network control stop
@@ -50,6 +53,7 @@ transport. Conversation ids are resolved across the subscribed local/remote
 nodes before the helper sends to the owner.
 
 HTTP forwards are named localhost URLs exposed on every subscribed node.
+Browser opens from remote nodes delegate to the parent control endpoint.
 EOF
 }
 
@@ -1068,7 +1072,42 @@ http_url() {
   awk -F '\t' 'NF >= 5 { print $5; exit }' <<< "$row"
 }
 
-http_control_request() {
+validate_browser_url() {
+  local url="$1"
+  [[ -n "$url" ]] || die "browser URL is required"
+  [[ ${#url} -le 4096 ]] || die "browser URL is too long"
+  case "$url" in
+    http://*|https://*) ;;
+    *) die "browser URL must start with http:// or https://" ;;
+  esac
+}
+
+open_browser_local() {
+  local url="$1"
+  validate_browser_url "$url"
+
+  if [[ -n "${CODEX_NETWORK_BROWSER_OPEN_CMD:-}" ]]; then
+    "$CODEX_NETWORK_BROWSER_OPEN_CMD" "$url"
+  elif [[ "$(uname -s)" == "Darwin" ]] && command -v open >/dev/null 2>&1; then
+    open "$url"
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$url"
+  elif command -v gio >/dev/null 2>&1; then
+    gio open "$url"
+  else
+    die "missing browser opener: set CODEX_NETWORK_BROWSER_OPEN_CMD or install xdg-open/gio"
+  fi
+
+  echo "opened browser URL: $url"
+}
+
+browser_open_parent() {
+  local url="${1:-}"
+  [[ $# -le 1 ]] || die "browser open accepts exactly one URL"
+  open_browser_local "$url"
+}
+
+parent_control_request() {
   local action="$1"
   shift
   local default_node
@@ -1081,10 +1120,45 @@ http_control_request() {
     node "$CONTROL_CLIENT_SCRIPT" "$action" "$@"
 }
 
-should_delegate_http_control() {
+should_delegate_parent_control() {
   [[ "${CODEX_NETWORK_CONTROL_DISABLE:-}" == "1" ]] && return 1
   [[ "${CODEX_NETWORK_CONTROL_DISABLE:-}" == "true" ]] && return 1
   ! have_managed_hosts
+}
+
+browser_open() {
+  local url="${1:-}"
+  [[ $# -le 1 ]] || die "browser open accepts exactly one URL"
+  validate_browser_url "$url"
+
+  if should_delegate_parent_control; then
+    parent_control_request browser-open "$url"
+    return
+  fi
+
+  browser_open_parent "$url"
+}
+
+browser_command() {
+  local command="${1:-open}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+
+  case "$command" in
+    open) browser_open "$@" ;;
+    -h|--help|"") usage ;;
+    *) die "unknown browser command: $command" ;;
+  esac
+}
+
+http_open() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "HTTP forward name is required"
+  [[ $# -le 1 ]] || die "http open accepts exactly one forward name"
+  local url
+  url="$(http_url "$name")"
+  browser_open "$url"
 }
 
 http_stop_parent() {
@@ -1123,8 +1197,8 @@ http_stop_parent() {
 }
 
 http_stop() {
-  if should_delegate_http_control; then
-    http_control_request http-stop "$@"
+  if should_delegate_parent_control; then
+    parent_control_request http-stop "$@"
     return
   fi
   http_stop_parent "$@"
@@ -1292,8 +1366,8 @@ http_expose_parent() {
 }
 
 http_expose() {
-  if should_delegate_http_control; then
-    http_control_request http-expose "$@"
+  if should_delegate_parent_control; then
+    parent_control_request http-expose "$@"
     return
   fi
   http_expose_parent "$@"
@@ -1308,6 +1382,7 @@ http_command() {
   case "$command" in
     list) http_list "$@" ;;
     expose) http_expose "$@" ;;
+    open) http_open "$@" ;;
     url) http_url "$@" ;;
     stop) http_stop "$@" ;;
     -h|--help|"") usage ;;
@@ -1865,12 +1940,15 @@ main() {
     stop) stop "$@" ;;
     send) send_command "$@" ;;
     http) http_command "$@" ;;
+    browser) browser_command "$@" ;;
+    open) browser_open "$@" ;;
     control) control_command "$@" ;;
     doctor) doctor_command "$@" ;;
     send-parent) send_message --local --url "$DEFAULT_PARENT_URL" "$@" ;;
     expose-parent) expose_parent "$@" ;;
     __list-local) thread_list_local "$@" ;;
     __resolve-local) resolve_local "$@" ;;
+    __browser-open-parent) browser_open_parent "$@" ;;
     __http-expose-parent) http_expose_parent "$@" ;;
     __http-stop-parent) http_stop_parent "$@" ;;
     status) status "$@" ;;

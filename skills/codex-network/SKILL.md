@@ -4,9 +4,10 @@ description:
   "Use codex-network whenever work needs to cross Codex environments: list or message Codex chats
   across the parent machine and subscribed remote hosts/RDEs, continue or steer another conversation
   by conversation id, validate conversation ids across workspaces, expose/share/forward a localhost
-  HTTP port, start a dev server that must be reachable from another environment, verify a URL from a
-  remote host, or hand off work between local and remote sessions without exposing raw SSH, tmux, or
-  app-server details."
+  HTTP port, open a parent-machine browser from a remote/RDE session, handle OAuth links or
+  localhost callbacks across environments, start a dev server that must be reachable from another
+  environment, verify a URL from a remote host, or hand off work between local and remote sessions
+  without exposing raw SSH, tmux, or app-server details."
 ---
 
 # Codex Network
@@ -27,6 +28,8 @@ Infrastructure Operations
   parent chat
 - the user says port forwarding, port-forwarding, forward a port, expose a port, share localhost,
   open a local service from another node, or make one environment reach another environment's port
+- the user asks to open a browser from an RDE, open a local URL on the parent machine, complete an
+  OAuth browser flow from a remote environment, or open a forwarded localhost URL
 - a task starts a localhost server, dev server, preview server, app server, HTTP API, webhook
   receiver, Storybook, Vite app, Next app, Rails app, dashboard, or other port that may need to be
   opened from another environment
@@ -49,6 +52,8 @@ Infrastructure Operations
 5. Create or stop mesh HTTP forwards from whichever node you are on. Remote/RDE nodes delegate the
    request to the parent control endpoint when `codex-network expose-parent --all-hosts` has been
    run on the parent.
+6. If an RDE needs a human/browser action, use the browser commands so the parent machine opens the
+   URL. For OAuth, expose the callback port first when the redirect URI points at localhost.
 
 ## Availability Check
 
@@ -110,10 +115,11 @@ codex-network http expose --conversation-id <conversation-id> --port <port> --na
 codex-network http url <name>
 ```
 
-List or stop active forwards:
+List, open, or stop active forwards:
 
 ```bash
 codex-network http list
+codex-network http open <name>
 codex-network http stop <name>
 ```
 
@@ -127,6 +133,20 @@ codex-network control status
 After this setup, a remote/RDE can run the same `codex-network http expose ...` and
 `codex-network http stop ...` commands. If no target node is supplied, a synced remote defaults to
 its `~/.codex-network/node` identity.
+
+Open a URL in the parent browser from any subscribed node:
+
+```bash
+codex-network browser open "<http-or-https-url>"
+codex-network open "<http-or-https-url>"
+```
+
+For OAuth from an RDE:
+
+```bash
+codex-network http expose --port <callback-port> --listen-port <callback-port> --name oauth-callback
+codex-network browser open "<authorization-url>"
+```
 
 After creating a forward, verify the returned URL from the parent and at least one relevant remote
 host:
@@ -156,7 +176,8 @@ ssh <remote-host> 'curl -fsS "$(codex-network http url <name>)"'
 - HTTP forwarding uses native SSH `-L` and `-R` tunnels managed by tmux.
 - Parent-local port remapping uses a tiny Node TCP proxy.
 - Remote/RDE port-forward control uses a parent-local HTTP control server exposed to each remote
-  over SSH `-R`; the server only accepts validated `http expose` and `http stop` requests.
+  over SSH `-R`; the server only accepts validated `http expose`, `http stop`, and browser-open
+  requests.
 - Node registry: `~/.codex-network/nodes.tsv`
 - HTTP registry: `~/.codex-network/http.tsv`
 
@@ -166,6 +187,10 @@ ssh <remote-host> 'curl -fsS "$(codex-network http url <name>)"'
   not the application port.
 - Remote/RDE create/stop requests require the parent control tunnel from
   `codex-network expose-parent --all-hosts`.
+- Remote/RDE browser-open requests also require the parent control tunnel from
+  `codex-network expose-parent --all-hosts`.
+- Browser-open only accepts `http://` and `https://` URLs. Do not pass `file://` URLs or shell
+  command strings.
 - If `codex-network list` cannot scan a remote host/RDE, restore the parent app-server SSH forward
   for that node before relying on conversation-id resolution.
 - Remote hosts/RDEs need `~/.local/bin/codex-network`, `~/.local/lib/codex-network`, and
