@@ -119,10 +119,10 @@ FAKE
       CODEX_NETWORK_CONTROL_URL="http://127.0.0.1:${control_port}" \
       bin/codex-network open "https://example.com/oauth?state=demo"
   )"
-  [[ "$output" == "args:__browser-open-parent https://example.com/oauth?state=demo" ]]
+  [[ "$output" == "args:__open-url-parent https://example.com/oauth?state=demo" ]]
 )
 
-check_browser_open() (
+check_open_url() (
   set -euo pipefail
   local tmp_dir fake_open output
   tmp_dir="$(mktemp -d)"
@@ -141,7 +141,7 @@ FAKE
       CODEX_NETWORK_CONTROL_DISABLE=1 \
       bin/codex-network open "http://127.0.0.1:3000/path"
   )"
-  [[ "$output" == "opened browser URL: http://127.0.0.1:3000/path" ]]
+  [[ "$output" == "opened URL: http://127.0.0.1:3000/path" ]]
   grep -qx 'http://127.0.0.1:3000/path' "$tmp_dir/browser.log"
 
   mkdir -p "$tmp_dir/home/.codex-network"
@@ -153,7 +153,7 @@ FAKE
       CODEX_NETWORK_CONTROL_DISABLE=1 \
       bin/codex-network open demo
   )"
-  [[ "$output" == "opened browser URL: http://127.0.0.1:3000" ]]
+  [[ "$output" == "opened URL: http://127.0.0.1:3000" ]]
   grep -qx 'http://127.0.0.1:3000' "$tmp_dir/browser.log"
 
   if CODEX_NETWORK_BROWSER_OPEN_CMD="$fake_open" FAKE_BROWSER_LOG="$tmp_dir/browser.log" bin/codex-network open "file:///tmp/nope" >/dev/null 2>&1; then
@@ -294,8 +294,8 @@ echo "checking HTTP proxy helper"
 check_http_proxy
 echo "checking parent control helper"
 check_control_server
-echo "checking browser open helper"
-check_browser_open
+echo "checking open helper"
+check_open_url
 echo "checking conversation id doctor"
 check_conversation_doctor
 echo "checking stale app-server session restart"

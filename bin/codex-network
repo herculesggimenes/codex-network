@@ -1070,19 +1070,19 @@ http_url() {
   awk -F '\t' 'NF >= 5 { print $5; exit }' <<< "$row"
 }
 
-validate_browser_url() {
+validate_open_url() {
   local url="$1"
-  [[ -n "$url" ]] || die "browser URL is required"
-  [[ ${#url} -le 4096 ]] || die "browser URL is too long"
+  [[ -n "$url" ]] || die "URL is required"
+  [[ ${#url} -le 4096 ]] || die "URL is too long"
   case "$url" in
     http://*|https://*) ;;
-    *) die "browser URL must start with http:// or https://" ;;
+    *) die "URL must start with http:// or https://" ;;
   esac
 }
 
-open_browser_local() {
+open_url_local() {
   local url="$1"
-  validate_browser_url "$url"
+  validate_open_url "$url"
 
   if [[ -n "${CODEX_NETWORK_BROWSER_OPEN_CMD:-}" ]]; then
     "$CODEX_NETWORK_BROWSER_OPEN_CMD" "$url"
@@ -1093,16 +1093,16 @@ open_browser_local() {
   elif command -v gio >/dev/null 2>&1; then
     gio open "$url"
   else
-    die "missing browser opener: set CODEX_NETWORK_BROWSER_OPEN_CMD or install xdg-open/gio"
+    die "missing URL opener: set CODEX_NETWORK_BROWSER_OPEN_CMD or install xdg-open/gio"
   fi
 
-  echo "opened browser URL: $url"
+  echo "opened URL: $url"
 }
 
-browser_open_parent() {
+open_url_parent() {
   local url="${1:-}"
-  [[ $# -le 1 ]] || die "browser open accepts exactly one URL"
-  open_browser_local "$url"
+  [[ $# -le 1 ]] || die "open accepts exactly one URL"
+  open_url_local "$url"
 }
 
 parent_control_request() {
@@ -1124,39 +1124,26 @@ should_delegate_parent_control() {
   ! have_managed_hosts
 }
 
-browser_open() {
+open_url() {
   local url="${1:-}"
-  [[ $# -le 1 ]] || die "browser open accepts exactly one URL"
-  validate_browser_url "$url"
+  [[ $# -le 1 ]] || die "open accepts exactly one URL"
+  validate_open_url "$url"
 
   if should_delegate_parent_control; then
-    parent_control_request browser-open "$url"
+    parent_control_request open-url "$url"
     return
   fi
 
-  browser_open_parent "$url"
+  open_url_parent "$url"
 }
 
-browser_command() {
-  local command="${1:-open}"
-  if [[ $# -gt 0 ]]; then
-    shift
-  fi
-
-  case "$command" in
-    open) browser_open "$@" ;;
-    -h|--help|"") usage ;;
-    *) die "unknown browser command: $command" ;;
-  esac
-}
-
-http_open() {
+open_forward() {
   local name="${1:-}"
   [[ -n "$name" ]] || die "HTTP forward name is required"
-  [[ $# -le 1 ]] || die "http open accepts exactly one forward name"
+  [[ $# -le 1 ]] || die "open accepts exactly one URL or forward name"
   local url
   url="$(http_url "$name")"
-  browser_open "$url"
+  open_url "$url"
 }
 
 open_target() {
@@ -1165,9 +1152,9 @@ open_target() {
   [[ $# -le 1 ]] || die "open accepts exactly one URL or forward name"
 
   case "$target" in
-    http://*|https://*) browser_open "$target" ;;
-    *://*) die "browser URL must start with http:// or https://" ;;
-    *) http_open "$target" ;;
+    http://*|https://*) open_url "$target" ;;
+    *://*) die "URL must start with http:// or https://" ;;
+    *) open_forward "$target" ;;
   esac
 }
 
@@ -1392,7 +1379,6 @@ http_command() {
   case "$command" in
     list) http_list "$@" ;;
     expose) http_expose "$@" ;;
-    open) http_open "$@" ;;
     url) http_url "$@" ;;
     stop) http_stop "$@" ;;
     -h|--help|"") usage ;;
@@ -1950,7 +1936,6 @@ main() {
     stop) stop "$@" ;;
     send) send_command "$@" ;;
     http) http_command "$@" ;;
-    browser) browser_command "$@" ;;
     open) open_target "$@" ;;
     control) control_command "$@" ;;
     doctor) doctor_command "$@" ;;
@@ -1958,7 +1943,7 @@ main() {
     expose-parent) expose_parent "$@" ;;
     __list-local) thread_list_local "$@" ;;
     __resolve-local) resolve_local "$@" ;;
-    __browser-open-parent) browser_open_parent "$@" ;;
+    __open-url-parent) open_url_parent "$@" ;;
     __http-expose-parent) http_expose_parent "$@" ;;
     __http-stop-parent) http_stop_parent "$@" ;;
     status) status "$@" ;;

@@ -31,7 +31,7 @@ HTTP forwarding uses native SSH tunnels:
 - A tiny Node TCP proxy is used only when remapping a parent-local service from one localhost port
   to another.
 - A parent-local control server, also exposed over SSH `-R`, lets a remote host request forward
-  creation, teardown, or browser opens without owning the parent machine's SSH configuration.
+  creation, teardown, or parent browser opens without owning the parent machine's SSH configuration.
 
 ## Architecture
 
@@ -205,8 +205,8 @@ default port exposes still resolve to the current remote node.
 
 - URLs are bound to `127.0.0.1`.
 - The forwarding control server binds to `127.0.0.1` and only accepts validated `http expose`,
-  `http stop`, and browser-open requests.
-- Browser-open requests only accept `http://` and `https://` URLs.
+  `http stop`, and `open` requests.
+- `open` requests only accept `http://` and `https://` URLs.
 - Forward names are restricted to safe characters.
 - Ports are validated before tunnel creation.
 - The helper does not print OAuth tokens or Codex credentials.

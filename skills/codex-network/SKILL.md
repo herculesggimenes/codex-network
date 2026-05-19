@@ -52,7 +52,7 @@ Infrastructure Operations
 5. Create or stop mesh HTTP forwards from whichever node you are on. Remote/RDE nodes delegate the
    request to the parent control endpoint when `codex-network expose-parent --all-hosts` has been
    run on the parent.
-6. If an RDE needs a human/browser action, use the browser commands so the parent machine opens the
+6. If an RDE needs a human/browser action, use `codex-network open` so the parent machine opens the
    URL. For OAuth, expose the callback port first when the redirect URI points at localhost.
 
 ## Availability Check
@@ -175,8 +175,7 @@ ssh <remote-host> 'curl -fsS "$(codex-network http url <name>)"'
 - HTTP forwarding uses native SSH `-L` and `-R` tunnels managed by tmux.
 - Parent-local port remapping uses a tiny Node TCP proxy.
 - Remote/RDE port-forward control uses a parent-local HTTP control server exposed to each remote
-  over SSH `-R`; the server only accepts validated `http expose`, `http stop`, and browser-open
-  requests.
+  over SSH `-R`; the server only accepts validated `http expose`, `http stop`, and `open` requests.
 - Node registry: `~/.codex-network/nodes.tsv`
 - HTTP registry: `~/.codex-network/http.tsv`
 
@@ -186,10 +185,10 @@ ssh <remote-host> 'curl -fsS "$(codex-network http url <name>)"'
   not the application port.
 - Remote/RDE create/stop requests require the parent control tunnel from
   `codex-network expose-parent --all-hosts`.
-- Remote/RDE browser-open requests also require the parent control tunnel from
+- Remote/RDE `open` requests also require the parent control tunnel from
   `codex-network expose-parent --all-hosts`.
-- Browser-open only accepts `http://` and `https://` URLs. Do not pass `file://` URLs or shell
-  command strings.
+- `open` only accepts `http://` and `https://` URLs. Do not pass `file://` URLs or shell command
+  strings.
 - If `codex-network list` cannot scan a remote host/RDE, restore the parent app-server SSH forward
   for that node before relying on conversation-id resolution.
 - Remote hosts/RDEs need `~/.local/bin/codex-network`, `~/.local/lib/codex-network`, and
